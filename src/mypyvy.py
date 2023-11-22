@@ -6,6 +6,7 @@ from datetime import datetime
 import json
 import logging
 import sys
+import os
 from typing import Any, cast, Dict, List, Optional, Tuple, TypeVar, Callable, Union, Sequence, Set
 import z3
 import resource
@@ -757,6 +758,8 @@ def to_fly(prog: Program) -> str:
 
 def main() -> None:
     parse_args(sys.argv[1:])
+    if utils.args.log == 'debug':
+        sys.setprofile(tracefunc)
 
     prog = parse_file(utils.args.filename)
     if prog is None:
@@ -802,6 +805,28 @@ def main() -> None:
 
     utils.exit(1 if utils.error_count > 0 else 0)
 
+
+def tracefunc(frame, event, arg, indent=[0]):
+    interesting_files = set(["updr.py"])
+    file = os.path.basename(frame.f_code.co_filename)
+    is_interesting_file = file in interesting_files
+    is_trivial_function = ("__" in frame.f_code.co_name) or("<" in frame.f_code.co_name)
+    is_interesting_function = not is_trivial_function \
+        and is_interesting_file \
+        or (file == "logic.py" and "check" in frame.f_code.co_name) \
+        or (file == "solver.py" and any([x in frame.f_code.co_name for x in ["check", "model"]]))
+
+    if not is_interesting_function:
+        return tracefunc
+
+    line = frame.f_lineno
+    if event == "call":
+        indent[0] += 2
+        utils.logger.debug(" " * indent[0] + f"call {file}:{line} - {frame.f_code.co_name}()")
+    elif event == "return":
+        utils.logger.debug(" " * indent[0] + f"exit {file}:{line} - {frame.f_code.co_name}()")
+        indent[0] -= 2
+    return tracefunc
 
 if __name__ == '__main__':
     main()

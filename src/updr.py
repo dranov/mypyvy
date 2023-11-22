@@ -45,6 +45,9 @@ class BackwardReachableState:
     num_steps_to_bad: int
     known_absent_until_frame: int = dataclasses.field(default=0, init=False)
 
+    def __str__(self) -> str:
+        return f"#{self.id}: {self.state_or_expr} (num_steps_to_bad = {self.num_steps_to_bad}, known_absent_until_frame = {self.known_absent_until_frame})"
+
 def negate_clause(c: Expr) -> Expr:
     if isinstance(c, syntax.Bool):
         return syntax.Bool(not c.val)
@@ -113,6 +116,7 @@ class Frames:
         self.push_forward_frames()
 
     def establish_safety(self) -> None:
+        utils.logger.info('establishing safety...')
         while bstate := self.find_something_to_block():
             self.currently_blocking = bstate
             if isinstance(bstate.state_or_expr, State):
@@ -123,6 +127,8 @@ class Frames:
             utils.logger.info(f'will block state #{bstate.id} in frame {frame_no}')
             self.block(diag_or_expr, frame_no, [(None, diag_or_expr)])
             bstate.known_absent_until_frame += 1
+        utils.logger.info('done establishing safety.')
+
 
     def find_something_to_block(self) -> Optional[BackwardReachableState]:
         utils.logger.info('looking for something to block')
@@ -143,6 +149,7 @@ class Frames:
                 eval_res = state.eval(syntax.And(*(self[min_frame_no + 1].summary())))
                 assert isinstance(eval_res, bool)
                 if eval_res:
+                    utils.logger.debug(f"blocking on #{bstate_min.id} {bstate_min.state_or_expr}")
                     return bstate_min
             else:
                 expr = state
@@ -151,6 +158,7 @@ class Frames:
                                               [syntax.Not(expr)],
                                               minimize=False)
                 if res is not None:
+                    utils.logger.debug(f"blocking on #{bstate_min.id} {bstate_min.state_or_expr}")
                     return bstate_min
 
             bstate_min.known_absent_until_frame += 1
@@ -310,6 +318,7 @@ class Frames:
             j: int,
             diag_or_expr: Union[Diagram, Expr]
     ) -> Tuple[CheckSatResult, Union[Optional[MySet[int]], Tuple[DefinitionDecl, Trace]]]:
+        utils.logger.debug(f'find_predecessor({j})')
         pre_frame = self[j]
         prog = syntax.the_program
         solver = self.solver
@@ -337,6 +346,7 @@ class Frames:
                 solver.add(t.translate_expr(f))
             solver.add(to_z3())
             for ition in prog.transitions():
+                utils.logger.debug(f'checking {ition.name}')
                 with solver.new_frame():
                     solver.add(t.translate_expr(ition.as_twostate_formula(prog.scope)))
                     if (res := solver.check(trackers())) == sat:
@@ -398,8 +408,10 @@ class Frames:
         f.l = l
 
     def simplify(self) -> None:
+        utils.logger.debug('simplifying...')
         for i, f in enumerate(self.fs):
             self._simplify_summary(f._summary)
+        utils.logger.debug('done simplifying.')
 
     def search(self) -> Frame:
         while True:

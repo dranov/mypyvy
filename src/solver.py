@@ -174,6 +174,11 @@ class Solver:
 
     def check(self, assumptions: Optional[Sequence[z3.ExprRef]] = None) -> CheckSatResult:
         # utils.logger.debug('solver.check')
+        utils.logger.debug(f'querying solver (nqueries={self.nqueries})')
+        if utils.args.log == 'debug':
+            with open(f'query_{self.nqueries}.smt2', 'w') as f:
+                f.write(self.z3solver.to_smt2())
+
         self.cvc4_model = None
         if assumptions is None:
             assert not self.assumptions_necessary
@@ -290,6 +295,7 @@ class Solver:
         if minimize is None:
             minimize = utils.args.minimize_models
         if minimize:
+            utils.logger.debug("minimizing model...")
             if sorts_to_minimize is None:
                 sorts_to_minimize = [Z3Translator.sort_to_z3(s) for s in self.scope.sorts.values()
                                      if not syntax.has_annotation(s, 'no_minimize')]
