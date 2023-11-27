@@ -1645,6 +1645,11 @@ def expand_macros(scope: Scope, e: Expr) -> Expr:
             new_body = expand_macros(scope, e.body)
         return QuantifierExpr(e.quant, e.binder.vs, new_body, span=e.span)
     elif isinstance(e, Id):
+        # NOTE(bool_in_model_weirdness)
+        # Sometimes we get Id(name={(): True/False}) in models,
+        # which we interpret as a boolean constant.
+        if isinstance(e.name, dict) and () in e.name:
+            return Bool(e.name[()])
         d = scope.get(e.name)
         if isinstance(d, DefinitionDecl):
             return expand_macros(scope, d.expr)

@@ -221,6 +221,10 @@ class Z3Translator:
                     else:
                         ans = z3model.eval(z3decl())
                         assert decl not in R
+                        # NOTE(bool_in_model_weirdness)
+                        # A boolean is a relation of arity 0. Rather than its
+                        # interpretation being a single boolean value, mypyvy
+                        # expects it to look like RelationInterp, i.e. a dict.
                         R[decl] = {(): bool(ans)}
                 elif isinstance(decl, FunctionDecl):
                     fl: FunctionInterp = {}

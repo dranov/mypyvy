@@ -21,6 +21,7 @@ import updr
 import utils
 import relaxed_traces
 from trace import bmc_trace
+from trace_dump import generate_traces
 
 import pd
 import rethink
@@ -425,6 +426,10 @@ def trace(s: Solver) -> None:
     else:
         utils.logger.always_print(f'\nchecked {len(traces)} traces and found {utils.error_count} errors')
 
+def trace_dump(s: Solver) -> None:
+    '''Generate CSV files of random traces of the protocol.'''
+    generate_traces(s)
+    return
 
 def check_one_bounded_width_invariant(s: Solver) -> None:
     prog = syntax.the_program
@@ -502,6 +507,12 @@ def parse_args(args: List[str]) -> None:
         help='search for concrete executions that satisfy query described by the file\'s trace declaration')
     trace_subparser.set_defaults(main=trace)
     all_subparsers.append(trace_subparser)
+
+    trace_dump_subparser = subparsers.add_parser(
+        'trace-dump',
+        help='generate CSV files of random traces of the protocol')
+    trace_dump_subparser.set_defaults(main=trace_dump)
+    all_subparsers.append(trace_dump_subparser)
 
     generate_parser_subparser = subparsers.add_parser(
         'generate-parser',

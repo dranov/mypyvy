@@ -388,7 +388,8 @@ class Diagram:
                 e = e if ans else syntax.Not(e)
                 rels[R].append(e)
         for C, c in struct.const_interps.items():
-            # There are two cases, c is either another Id or a constant
+            # NOTE(bool_in_model_weirdness)
+            # There are two cases, c is either another Id or a boolean constant
             # Constants are produced as dicts of the form {(): bool(ans)}
             # in translator.py:Z3Translator:_old_model_to_trace
             if isinstance(c, dict) and () in c:
@@ -445,6 +446,7 @@ class Diagram:
             if isinstance(e.arg2, syntax.Id):
                 ans[e.arg2] = e.arg1
             else:
+                # NOTE(bool_in_model_weirdness)
                 # Sometimes we get a boolean on the RHS of the equality,
                 # and there is no need to substitute it.
                 # TODO: should we then do ans[e.arg1] = e.arg2?

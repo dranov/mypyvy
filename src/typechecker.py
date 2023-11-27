@@ -190,6 +190,13 @@ def typecheck_expr(scope: syntax.Scope, e: syntax.Expr, sort: InferenceSort) -> 
 
         return BoolSort
     elif isinstance(e, syntax.Id):
+        # NOTE(bool_in_model_weirdness)
+        # Sometimes we get Id(name={(): True/False}) in models,
+        # which we interpret as a boolean constant.
+        if isinstance(e.name, dict) and () in e.name:
+            check_constraint(e.span, sort, BoolSort)
+            return BoolSort
+
         d = scope.get(e.name)
 
         if d is None:
