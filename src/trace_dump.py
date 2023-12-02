@@ -1,12 +1,53 @@
+# The purpose of this file is to generate "interesting" and "diverse" traces
+# for a given specification, and dump them in a CSV format understood by DuoAI.
+
 from syntax import *
 from logic import *
 
 from translator import Z3Translator
+from trace import translate_transition_call
 
 import random
 
+
+
+def mk_trace(s: Solver, num_states: int = 5):
+    '''Generate a trace with side-conditions on which actions were taken.'''
+
+    prog = syntax.the_program
+    lator = s.get_translator(num_states)
+
+    with s.new_frame():
+        if num_states > 0:
+            for init in prog.inits():
+                s.add(lator.translate_expr(init.expr))
+
+        for i in range(0, num_states - 1):
+            # Randomly pick a satisfying transition
+            itions = list(prog.transitions())
+            random.shuffle(itions)
+
+            call = syntax.TransitionCall(itions[0].name, None)
+
+            tid_name = get_transition_indicator(str(i), call.target)
+            print(tid_name)
+            tid = z3.Bool(tid_name)
+            s.add(z3.Implies(tid, translate_transition_call(s, lator, i, call)))
+            s.add(tid)
+
+            # TODO: add trace diversity constraints
+
+        trace = check_unsat([], s, num_states)
+        print(trace)
+        import pdb; pdb.set_trace()
+
+        
 # See `pd.py:enumerate_reachable_states`
 def generate_traces(s: Solver, how_many: int = 3, max_length: int = 5) -> dict[int, Trace]:
+
+    mk_trace(s, 3)
+    return {}
+
     # TODO: take as input sort cardinality constraints
     prog = syntax.the_program
     t1 = s.get_translator(1) # translator for one-state formulas
@@ -26,17 +67,22 @@ def generate_traces(s: Solver, how_many: int = 3, max_length: int = 5) -> dict[i
         traces[trace_id] = [init.as_state(0)]
     
     with s.new_frame():
-        for sort in prog.sorts():
-            # TODO: this should be a parameter
-            b = 4
-            print(f'bounding {sort} to cardinality {b}')
-            s.add(s._sort_cardinality_constraint(Z3Translator.sort_to_z3(sort), b))
+        # for sort in prog.sorts():
+        #     # TODO: this should be a parameter
+        #     b = 4
+        #     print(f'bounding {sort} to cardinality {b}')
+        #     s.add(s._sort_cardinality_constraint(Z3Translator.sort_to_z3(sort), b))
 
         # Get a few different instantiations of the initial state
         print('looking for initial states')
         with s.new_frame():
             for init in prog.inits():
                 s.add(t1.translate_expr(init.expr))
+
+            # TODO: we want "interesting" initial states.
+            # It seems for the Token contract, some/many initial
+            # states lead to certain transitions only being able
+            # to panic. We want to avoid these.
 
             while num_traces < how_many:
                 res = s.check()
@@ -72,6 +118,7 @@ def generate_traces(s: Solver, how_many: int = 3, max_length: int = 5) -> dict[i
                 # Randomly pick a satisfying transition
                 itions = list(prog.transitions())
                 random.shuffle(itions)
+                # print(list(map(lambda x: x.name, itions)))
                 found_transition = False
 
                 for ition in itions:
