@@ -10,6 +10,25 @@ from trace import translate_transition_call
 import random
 
 
+def add_diversity_constraints(s: Solver, tr: dict[int, dict[str, z3.Bool]]):
+    prog = syntax.the_program
+    num_tr = len(tr)
+
+    # (1) the same transition does not happen three times in a row
+    if num_tr >= 3:
+        print("Adding constraint: not-three-times-in-a-row")
+        for i in range(num_tr - 2):
+            for n in tr[i].keys():
+                s.add(z3.Implies(z3.And(tr[i][n], tr[i + 1][n]), z3.Not(tr[i + 2][n])))
+
+    # (2) every transition happens at least once
+    if num_tr >= len(list(prog.transitions())):
+        print("Adding constraint: every-transition-at-least-once")
+        for ition in prog.transitions():
+            occ = [tr[i][ition.name] for i in tr.keys()]
+            s.add(z3.Or(*occ))
+
+    return
 
 def mk_trace(s: Solver, num_states: int = 5):
     '''Generate a trace with side-conditions on which actions were taken.'''
@@ -17,35 +36,40 @@ def mk_trace(s: Solver, num_states: int = 5):
     prog = syntax.the_program
     lator = s.get_translator(num_states)
 
+    # Mapping from state ID to all transition indicators for that state
+    # Used to construct diversity side-conditions.
+    tr: dict[int, list[(str, z3.Bool)]] = {}
+
     with s.new_frame():
         if num_states > 0:
             for init in prog.inits():
                 s.add(lator.translate_expr(init.expr))
 
         for i in range(0, num_states - 1):
-            # Randomly pick a satisfying transition
-            itions = list(prog.transitions())
-            random.shuffle(itions)
+            l = []
+            for ition in prog.transitions():
+                call = syntax.TransitionCall(ition.name, None)
+                tid_name = get_transition_indicator(str(i), call.target)
+                tid = z3.Bool(tid_name)
+                s.add(z3.Implies(tid, translate_transition_call(s, lator, i, call)))
+                l.append(tid)
 
-            call = syntax.TransitionCall(itions[0].name, None)
+                # Record tid
+                tr[i] = tr.get(i, {})
+                tr[i][call.target] = tid
 
-            tid_name = get_transition_indicator(str(i), call.target)
-            print(tid_name)
-            tid = z3.Bool(tid_name)
-            s.add(z3.Implies(tid, translate_transition_call(s, lator, i, call)))
-            s.add(tid)
+            s.add(z3.Or(*l))
 
-            # TODO: add trace diversity constraints
-
+        add_diversity_constraints(s, tr)
         trace = check_unsat([], s, num_states)
         print(trace)
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
         
 # See `pd.py:enumerate_reachable_states`
 def generate_traces(s: Solver, how_many: int = 3, max_length: int = 5) -> dict[int, Trace]:
 
-    mk_trace(s, 3)
+    mk_trace(s, 5)
     return {}
 
     # TODO: take as input sort cardinality constraints
