@@ -8,6 +8,7 @@ from translator import Z3Translator
 from trace import translate_transition_call
 
 import random
+import pandas as pd
 
 
 def add_diversity_constraints(s: Solver, tr: dict[int, dict[str, z3.Bool]]):
@@ -146,5 +147,71 @@ def generate_traces(s: Solver, how_many: int = 3, base_length: int = 5, max_leng
                         elif res == z3.unknown:
                             print(f'solver returned unknown for {ition.name}')
 
-    # import pdb; pdb.set_trace()
+                if not found_transition:
+                    print(f'... could not extend trace {t_id} to length {i + 1}')
+                    break
+
+        # dump_trace_txt(t_id, traces[t_id], f"trace_{t_id}.txt")
+        dump_trace_csv(t_id, traces[t_id], f"trace_{t_id}.csv")
+
     return traces
+
+def dump_trace_txt(id: int, tr: list[(str, State)], filename: str):
+    print(f"Dumping trace {id} to {filename}...")
+    with open(filename, 'w') as f:
+        for (i, (tname, state)) in enumerate(tr):
+            if i == 0:
+                f.write(f'state {i}:\n\n{state}\n\n')
+            else:
+                f.write(f'transition {tname}\n\nstate {i}:\n\n{state}\n\n')
+
+def dump_trace_csv(i: int, tr: list[(str, State)], filename: str):
+    def parse_state(st: State) -> dict[str, bool]:
+        d = {}  # dictionary to dump everything into
+
+        # Parse sorts
+        sorts = {}
+        for (sort, elems) in st.univs.items():
+            sorts[sort.name] = list(map(str.upper, elems))
+
+        # Dump constants/individuals
+        for (const, interp) in st.const_interps.items():
+            # Special case for booleans
+            if isinstance(const.sort, syntax._BoolSort):
+                # TODO: handle booleans
+                pass
+
+            else:
+                sort = const.sort.name
+                assert sort in sorts, f"sort {sort} not found in initial state"
+                interp = str.upper(interp)
+                for elem in sorts[sort]:
+                    name = f"{const.name}={elem}"
+                    d[name] = True if elem == interp else False
+
+        # Dump relations
+        for (rel, interp) in st.rel_interps.items():
+            if rel.arity == 0:
+                d[rel.name] = True if interp else False
+            else:
+                for (args, val) in interp.items():
+                    name = f"{rel.name}({','.join(map(str.upper, args))})"
+                    d[name] = True if val else False
+
+        # TODO: handle functions; it's a bit unclear what DuoAI's
+        # translate.py does for them.
+
+        return (d, sorts)
+
+    xs = [parse_state(st) for (_tname, st) in tr]
+    # Sanity check: all sorts are the same
+    assert all(x[1] == xs[0][1] for x in xs), "sorts must be the same across all states in a trace"
+    xs = [x[0] for x in xs]
+
+    df = pd.DataFrame(xs)
+    df.replace({False: 0, True: 1}, inplace=True)
+    df.to_csv(filename, index=False)
+
+def dump_traces(traces: dict[int, list[(str, State)]], base_filename: str):
+    for i in traces.keys():
+        dump_trace_txt(i, traces[i], f"{base_filename}_{i}.txt")
