@@ -30,7 +30,7 @@ def add_diversity_constraints(s: Solver, tr: dict[int, dict[str, z3.Bool]]):
 
     return
 
-def mk_trace(s: Solver, num_states: int, allow_stutter=False):
+def mk_trace(s: Solver, num_states: int, sort_sizes: Optional[tuple[int]] = None, allow_stutter=False):
     '''Generate a trace with side-conditions on which actions were taken.'''
     # TODO: add cardinality constraints
 
@@ -42,6 +42,13 @@ def mk_trace(s: Solver, num_states: int, allow_stutter=False):
     tr: dict[int, list[(str, z3.Bool)]] = {}
 
     with s.new_frame():
+        # Bound sort sizes
+        if sort_sizes is not None:
+            for (i, sort) in enumerate(prog.sorts()):
+                b = sort_sizes[i]
+                print(f'bounding {sort} to cardinality {b}')
+                s.add(s._sort_cardinality_constraint(Z3Translator.sort_to_z3(sort), b))
+
         if num_states > 0:
             for init in prog.inits():
                 s.add(lator.translate_expr(init.expr))
@@ -73,7 +80,7 @@ def mk_trace(s: Solver, num_states: int, allow_stutter=False):
         return trace
         
 # See `pd.py:enumerate_reachable_states`
-def generate_traces(s: Solver, how_many: int = 3, base_length: int = 5, max_length: int = 25) -> dict[int, list[(str, State)]]:
+def generate_traces(s: Solver, how_many: int = 3, base_length: int = 5, max_length: int = 25, sort_sizes: Optional[tuple[int]] = None) -> dict[int, list[(str, State)]]:
     assert max_length >= base_length, f"max_length ({max_length}) must be >= base_length ({base_length})"
 
     prog = syntax.the_program
@@ -81,7 +88,7 @@ def generate_traces(s: Solver, how_many: int = 3, base_length: int = 5, max_leng
     # TODO: use traces declared using `sat trace` as base traces
     # Create a trace that is reasonably diverse (expensive SMT query)
     # then extend it cheaply at random (with cheap queries)
-    base_trace = mk_trace(s, base_length, allow_stutter=True)
+    base_trace = mk_trace(s, base_length, sort_sizes, allow_stutter=False)
 
     if base_trace is None:
         print("No base trace satisfying conditions found! Aborting.")
@@ -110,15 +117,21 @@ def generate_traces(s: Solver, how_many: int = 3, base_length: int = 5, max_leng
         traces[t_id] = trace_to_state_list(base_trace)
         
         for i in range(base_length - 1, max_length - 1):
-            # Randomly pick a satisfying transition
-            itions = list(prog.transitions())
-            random.shuffle(itions)
-            found_transition = False
-            for ition in itions:
-                if found_transition:
-                    break
+            assert len(traces[t_id]) == i + 1, f"trace {t_id} has length {len(traces[t_id])} but should have length {i + 1}"
+            with s.new_frame():
+                # Assert the current state
+                (_last_tr, last_state) = traces[t_id][-1]
+                s.add(t1.translate_expr(last_state.as_onestate_formula()))
 
-                with s.new_frame():
+                # Randomly pick a satisfying transition
+                itions = list(prog.transitions())
+                random.shuffle(itions)
+                found_transition = False
+                for ition in itions:
+                    if found_transition:
+                        break
+
+                    with s.new_frame():
                         s.add(t2.translate_expr(ition.as_twostate_formula(prog.scope)))
                         res = s.check()
                         if res == z3.sat:
