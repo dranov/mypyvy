@@ -432,8 +432,10 @@ def trace_dump(s: Solver) -> None:
     max_length = utils.args.max_length
     sort_bounds = ast.literal_eval(utils.args.sort_bounds)
     output_file = utils.args.output_file
+    sort_elems = ast.literal_eval(utils.args.sort_elems) if utils.args.sort_elems else None
+    pred_columns = ast.literal_eval(utils.args.pred_columns) if utils.args.pred_columns else None
     print(f"generate traces(max_length={max_length}, sort_bounds={sort_bounds}, output_file={output_file})")
-    generate_trace(s, max_length=max_length, sort_sizes=sort_bounds, filename=output_file)
+    generate_trace(s, max_length=max_length, sort_sizes=sort_bounds, sort_elems=sort_elems, pred_columns=pred_columns,filename=output_file)
     return
 
 def check_one_bounded_width_invariant(s: Solver) -> None:
@@ -637,7 +639,10 @@ def parse_args(args: List[str]) -> None:
 
     trace_dump_subparser.add_argument('--max-length', help='maximum length of generated traces', type=int, default=25)
     trace_dump_subparser.add_argument('--sort-bounds', help='list of sort bounds, e.g. [2, 3, 1]', type=str, default=[])
+    trace_dump_subparser.add_argument('--sort-elems', help="which elems exist in which sort, e.g. {'node': ['N1', 'N2']}", type=str, default=None)
+    trace_dump_subparser.add_argument('--pred-columns', help="list of predicates to include in the trace, e.g. ['vote_yes[N1]', 'vote_yes[N2]', abort_flag]", type=str, default=None)
     trace_dump_subparser.add_argument('--output-file', help='output file', type=str, default='trace-dump.csv')
+
 
     argparser.add_argument('filename')
 

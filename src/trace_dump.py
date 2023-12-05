@@ -81,7 +81,7 @@ def mk_trace(s: Solver, num_states: int, sort_sizes: Optional[list[int]] = None,
         return trace
         
 # See `pd.py:enumerate_reachable_states`
-def generate_trace(s: Solver, max_length: int = 25, sort_sizes: Optional[list[int]] = None, filename="trace-dump.csv", base_length: int = 5) -> dict[int, list[(str, State)]]:
+def generate_trace(s: Solver, max_length: int = 25, sort_sizes: Optional[list[int]] = None, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None, filename="trace-dump.csv", base_length: int = 5) -> dict[int, list[(str, State)]]:
     assert max_length >= base_length, f"max_length ({max_length}) must be >= base_length ({base_length})"
 
     prog = syntax.the_program
@@ -153,7 +153,7 @@ def generate_trace(s: Solver, max_length: int = 25, sort_sizes: Optional[list[in
                 break
 
     # dump_trace_txt(t_id, traces[t_id], f"trace_{t_id}.txt")
-    dump_trace_csv(t_id, traces[t_id], filename)
+    dump_trace_csv(t_id, traces[t_id], filename, sort_elems, pred_columns)
 
     return traces
 
@@ -166,26 +166,45 @@ def dump_trace_txt(id: int, tr: list[(str, State)], filename: str):
             else:
                 f.write(f'transition {tname}\n\nstate {i}:\n\n{state}\n\n')
 
-def dump_trace_csv(i: int, tr: list[(str, State)], filename: str):
+def dump_trace_csv(i: int, tr: list[(str, State)], filename: str, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None):
+    def elem_to_univ_name(elem: str) -> str:
+        # FIXME: make this work with more than 10 elements
+        return str.upper(elem[0]) + str(int(elem[-1]) + 1)
+    
+
     def parse_state(st: State) -> dict[str, bool]:
+        nonlocal sort_elems, pred_columns
         d = {}  # dictionary to dump everything into
+
+        # mapping from mypyvy sort element name (e.g. 'epoch0') to
+        # DuoAI sort element name (e.g. 'E1')
+        to_duo = {}
+        to_mypyvy = {}
 
         # Parse sorts
         sorts = {}
         for (sort, elems) in st.univs.items():
-            sorts[sort.name] = list(map(str.upper, elems))
+            if sort_elems is None:
+                sorts[sort.name] = list(map(elem_to_univ_name, elems))
+            else:
+                assert sort.name in sort_elems, f"sort {sort.name} not found in sort_elems"
+                assert len(elems) == len(sort_elems[sort.name]), f"sort {sort.name} has {len(elems)} elements but sort_elems has {len(sort_elems[sort.name])} elements"
+                sorts[sort.name] = sort_elems[sort.name]
+                for (i, elem) in enumerate(elems):
+                    to_duo[elem] = sort_elems[sort.name][i]
+                    to_mypyvy[sort_elems[sort.name][i]] = elem
+
+        # import pdb; pdb.set_trace()
 
         # Dump constants/individuals
         for (const, interp) in st.const_interps.items():
             # Special case for booleans
             if isinstance(const.sort, syntax._BoolSort):
-                # TODO: handle booleans
-                pass
-
+                d[const.name] = True if interp[()] else False
             else:
                 sort = const.sort.name
                 assert sort in sorts, f"sort {sort} not found in initial state"
-                interp = str.upper(interp)
+                interp = elem_to_univ_name(interp)
                 for elem in sorts[sort]:
                     name = f"{const.name}={elem}"
                     d[name] = True if elem == interp else False
@@ -196,7 +215,7 @@ def dump_trace_csv(i: int, tr: list[(str, State)], filename: str):
                 d[rel.name] = True if interp else False
             else:
                 for (args, val) in interp.items():
-                    name = f"{rel.name}({','.join(map(str.upper, args))})"
+                    name = f"{rel.name}({','.join(map(elem_to_univ_name, args))})"
                     d[name] = True if val else False
 
         # TODO: handle functions; it's a bit unclear what DuoAI's
