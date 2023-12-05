@@ -321,11 +321,12 @@ class Solver:
 
     def _cardinality_constraint(self, x: Union[z3.SortRef, z3.FuncDeclRef], n: int) -> z3.ExprRef:
         if isinstance(x, z3.SortRef):
-            return self._sort_cardinality_constraint(x, n)
+            return self._sort_nonstrict_cardinality_constraint(x, n)
         else:
             return self._relational_cardinality_constraint(x, n)
 
-    def _sort_cardinality_constraint(self, s: z3.SortRef, n: int) -> z3.ExprRef:
+    def _sort_nonstrict_cardinality_constraint(self, s: z3.SortRef, n: int) -> z3.ExprRef:
+        '''Sort s must have at most n elements, but can have fewer.'''
         x = z3.Const('x$', s)
         disjs = []
         for i in range(n):
@@ -333,6 +334,18 @@ class Solver:
             disjs.append(x == c)
 
         return z3.ForAll(x, z3.Or(*disjs))
+
+    def _sort_strict_cardinality_constraint(self, s: z3.SortRef, n: int) -> z3.ExprRef:
+        '''Sort s must have exactly n elements.'''
+        x = z3.Const('x$', s)
+        disjs = []
+        consts = []
+        for i in range(n):
+            c = z3.Const(f'card$_{s.name()}_{i}', s)
+            consts.append(c)
+            disjs.append(x == c)
+
+        return z3.ForAll(x, z3.And(z3.Or(*disjs), z3.Distinct(*consts)))
 
     def _relational_cardinality_constraint(self, relation: z3.FuncDeclRef, n: int) -> z3.ExprRef:
         if relation.arity() == 0:

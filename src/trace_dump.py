@@ -7,8 +7,9 @@ from logic import *
 from translator import Z3Translator
 from trace import translate_transition_call
 
-import random
+import copy
 import pandas as pd
+import random
 
 
 def add_diversity_constraints(s: Solver, tr: dict[int, dict[str, z3.Bool]]):
@@ -48,7 +49,7 @@ def mk_trace(s: Solver, num_states: int, sort_sizes: Optional[list[int]] = None,
             for (i, sort) in enumerate(prog.sorts()):
                 b = sort_sizes[i]
                 print(f'bounding {sort} to cardinality {b}')
-                s.add(s._sort_cardinality_constraint(Z3Translator.sort_to_z3(sort), b))
+                s.add(s._sort_strict_cardinality_constraint(Z3Translator.sort_to_z3(sort), b))
 
         if num_states > 0:
             for init in prog.inits():
@@ -75,7 +76,7 @@ def mk_trace(s: Solver, num_states: int, sort_sizes: Optional[list[int]] = None,
 
             s.add(z3.Or(*tids))
 
-        add_diversity_constraints(s, tr)
+        # add_diversity_constraints(s, tr)
         print(f"Generating base-trace of length {num_states}")
         trace = check_unsat([], s, num_states, minimize=False, verbose=False)
         return trace
@@ -93,6 +94,7 @@ def generate_trace(s: Solver, max_length: int = 25, sort_sizes: Optional[list[in
 
     if base_trace is None:
         print("No base trace satisfying conditions found! Aborting.")
+        # FIXME: generate CSV with just the header when no traces are found
     # print(f"Found base trace of length {base_length}: {base_trace.transitions}")
 
     # Last state in base_trace has idx = base_length - 2
@@ -167,6 +169,7 @@ def dump_trace_txt(id: int, tr: list[(str, State)], filename: str):
                 f.write(f'transition {tname}\n\nstate {i}:\n\n{state}\n\n')
 
 def dump_trace_csv(i: int, tr: list[(str, State)], filename: str, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None):
+    print(f"Dumping trace to {filename}...")
     def elem_to_univ_name(elem: str) -> str:
         # FIXME: make this work with more than 10 elements
         return str.upper(elem[0]) + str(int(elem[-1]) + 1)
@@ -194,32 +197,64 @@ def dump_trace_csv(i: int, tr: list[(str, State)], filename: str, sort_elems: Op
                     to_duo[elem] = sort_elems[sort.name][i]
                     to_mypyvy[sort_elems[sort.name][i]] = elem
 
-        # import pdb; pdb.set_trace()
+        def eval_duo_expr(dexpr: str, in_st:State):
+            e = parser.parse_expr(dexpr)
+            subst = { Id(k):Id(v) for (k, v) in to_mypyvy.items() }
+            en = syntax.subst_vars_simple(e, subst)
+            interp = in_st.eval(en)
+            # Fix for booleans
+            if isinstance(interp, dict) and () in interp:
+                interp = True if interp[()] else False
+            return interp
 
-        # Dump constants/individuals
-        for (const, interp) in st.const_interps.items():
-            # Special case for booleans
-            if isinstance(const.sort, syntax._BoolSort):
-                d[const.name] = True if interp[()] else False
-            else:
-                sort = const.sort.name
-                assert sort in sorts, f"sort {sort} not found in initial state"
-                interp = elem_to_univ_name(interp)
-                for elem in sorts[sort]:
-                    name = f"{const.name}={elem}"
-                    d[name] = True if elem == interp else False
+        # Dump predicates (DuoAI)
+        if pred_columns is not None:
+            # HACK: add constants for all sort elements to the state
+            # so we can evaluate the expression. We need to artificially
+            # create some inner state to make this work.
+            new_constants = {}
+            for (sort_decl, elems) in st.univs.items():
+                for elem in elems:
+                    _sort = UninterpretedSort(sort_decl.name)
+                    _sort.decl = sort_decl
+                    cnst = ConstantDecl(elem, _sort, mutable=False)
+                    new_constants[cnst] = elem
+            st.trace.immut_const_interps.update(new_constants)
+            # add our fake constants to the scope
+            orig_scope = copy.deepcopy(syntax.the_program.scope)
+            for cnst in new_constants.keys():
+                syntax.the_program.scope.add_constant(cnst)
 
-        # Dump relations
-        for (rel, interp) in st.rel_interps.items():
-            if rel.arity == 0:
-                d[rel.name] = True if interp else False
-            else:
-                for (args, val) in interp.items():
-                    name = f"{rel.name}({','.join(map(elem_to_univ_name, args))})"
-                    d[name] = True if val else False
+            for pred in pred_columns:
+                d[pred] = eval_duo_expr(pred, st)
 
-        # TODO: handle functions; it's a bit unclear what DuoAI's
-        # translate.py does for them.
+            syntax.the_program.scope = orig_scope # restore original scope
+        # Dump predicate (no DuoAI)
+        else:
+            # Dump constants/individuals
+            for (const, interp) in st.const_interps.items():
+                # Special case for booleans
+                if isinstance(const.sort, syntax._BoolSort):
+                    d[const.name] = True if interp[()] else False
+                else:
+                    sort = const.sort.name
+                    assert sort in sorts, f"sort {sort} not found in initial state"
+                    interp = elem_to_univ_name(interp)
+                    for elem in sorts[sort]:
+                        name = f"{const.name}={elem}"
+                        d[name] = True if elem == interp else False
+
+            # Dump relations
+            for (rel, interp) in st.rel_interps.items():
+                if rel.arity == 0:
+                    d[rel.name] = True if interp else False
+                else:
+                    for (args, val) in interp.items():
+                        name = f"{rel.name}({','.join(map(elem_to_univ_name, args))})"
+                        d[name] = True if val else False
+
+            # TODO: handle functions; it's a bit unclear what DuoAI's
+            # translate.py does for them.
 
         return (d, sorts)
 

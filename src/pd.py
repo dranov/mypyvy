@@ -8819,7 +8819,7 @@ def enumerate_reachable_states(s: Solver) -> None:
             # else:
             #     b = 2
             print(f'bounding {sort} to candinality {b}')
-            s.add(s._sort_cardinality_constraint(Z3Translator.sort_to_z3(sort), b))
+            s.add(s._sort_nonstrict_cardinality_constraint(Z3Translator.sort_to_z3(sort), b))
 
         unknown = False
 
