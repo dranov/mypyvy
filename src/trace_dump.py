@@ -31,7 +31,7 @@ def add_diversity_constraints(s: Solver, tr: dict[int, dict[str, z3.Bool]]):
 
     return
 
-def mk_trace(s: Solver, num_states: int, sort_sizes: Optional[tuple[int]] = None, allow_stutter=False):
+def mk_trace(s: Solver, num_states: int, sort_sizes: Optional[list[int]] = None, allow_stutter=False):
     '''Generate a trace with side-conditions on which actions were taken.'''
     # TODO: add cardinality constraints
 
@@ -77,11 +77,11 @@ def mk_trace(s: Solver, num_states: int, sort_sizes: Optional[tuple[int]] = None
 
         add_diversity_constraints(s, tr)
         print(f"Generating base-trace of length {num_states}")
-        trace = check_unsat([], s, num_states, minimize=False)
+        trace = check_unsat([], s, num_states, minimize=False, verbose=False)
         return trace
         
 # See `pd.py:enumerate_reachable_states`
-def generate_traces(s: Solver, how_many: int = 3, base_length: int = 5, max_length: int = 25, sort_sizes: Optional[tuple[int]] = None) -> dict[int, list[(str, State)]]:
+def generate_trace(s: Solver, max_length: int = 25, sort_sizes: Optional[list[int]] = None, filename="trace-dump.csv", base_length: int = 5) -> dict[int, list[(str, State)]]:
     assert max_length >= base_length, f"max_length ({max_length}) must be >= base_length ({base_length})"
 
     prog = syntax.the_program
@@ -93,14 +93,13 @@ def generate_traces(s: Solver, how_many: int = 3, base_length: int = 5, max_leng
 
     if base_trace is None:
         print("No base trace satisfying conditions found! Aborting.")
-    print(f"Found base trace of length {base_length}: {base_trace.transitions}")
+    # print(f"Found base trace of length {base_length}: {base_trace.transitions}")
 
     # Last state in base_trace has idx = base_length - 2
     # lator = s.get_translator(max_length)
     t1 = s.get_translator(1) # translator for one-state formulas
     t2 = s.get_translator(2) # translator for two-state formulas
 
-    num_traces = 0
     # Each entry is a (transition_name, post_state) pair
     # for init, transition_name = ''
     traces: dict[int, list[(str, State)]] = {}
@@ -113,46 +112,48 @@ def generate_traces(s: Solver, how_many: int = 3, base_length: int = 5, max_leng
             x.append((tname, t.as_state(sid)))
         return x
 
-    for t_id in range(how_many):
-        print(f'\nextending trace {t_id}')
-        traces[t_id] = trace_to_state_list(base_trace)
-        
-        for i in range(base_length - 1, max_length - 1):
-            assert len(traces[t_id]) == i + 1, f"trace {t_id} has length {len(traces[t_id])} but should have length {i + 1}"
-            with s.new_frame():
-                # Assert the current state
-                (_last_tr, last_state) = traces[t_id][-1]
-                s.add(t1.translate_expr(last_state.as_onestate_formula()))
+    t_id = 0
+    print(f'\nTrace {t_id}')
+    traces[t_id] = trace_to_state_list(base_trace)
+    for (i, (tname, _st)) in enumerate(traces[t_id][1:]):
+        print(f'... transition {i}: {tname}')
+    
+    for i in range(base_length - 1, max_length - 1):
+        assert len(traces[t_id]) == i + 1, f"trace {t_id} has length {len(traces[t_id])} but should have length {i + 1}"
+        with s.new_frame():
+            # Assert the current state
+            (_last_tr, last_state) = traces[t_id][-1]
+            s.add(t1.translate_expr(last_state.as_onestate_formula()))
 
-                # Randomly pick a satisfying transition
-                itions = list(prog.transitions())
-                random.shuffle(itions)
-                found_transition = False
-                for ition in itions:
-                    if found_transition:
-                        break
-
-                    with s.new_frame():
-                        s.add(t2.translate_expr(ition.as_twostate_formula(prog.scope)))
-                        res = s.check()
-                        if res == z3.sat:
-                            m = Z3Translator.model_to_trace(s.model(minimize=False), 2)
-                            print(f'... found extension of trace {t_id} to length {i + 1} via {ition.name}')
-                            post = m.as_state(1)
-                            traces[t_id].append((ition.name, post))
-                            found_transition = True
-                        elif res == z3.unsat:
-                            # print(f'... could not extend trace {t_id} to length {i + 1} via {ition.name}')
-                            pass
-                        elif res == z3.unknown:
-                            print(f'solver returned unknown for {ition.name}')
-
-                if not found_transition:
-                    print(f'... could not extend trace {t_id} to length {i + 1}')
+            # Randomly pick a satisfying transition
+            itions = list(prog.transitions())
+            random.shuffle(itions)
+            found_transition = False
+            for ition in itions:
+                if found_transition:
                     break
 
-        # dump_trace_txt(t_id, traces[t_id], f"trace_{t_id}.txt")
-        dump_trace_csv(t_id, traces[t_id], f"trace_{t_id}.csv")
+                with s.new_frame():
+                    s.add(t2.translate_expr(ition.as_twostate_formula(prog.scope)))
+                    res = s.check()
+                    if res == z3.sat:
+                        m = Z3Translator.model_to_trace(s.model(minimize=False), 2)
+                        print(f'... transition {i + 1}: {ition.name}')
+                        post = m.as_state(1)
+                        traces[t_id].append((ition.name, post))
+                        found_transition = True
+                    elif res == z3.unsat:
+                        # print(f'... could not extend trace {t_id} to length {i + 1} via {ition.name}')
+                        pass
+                    elif res == z3.unknown:
+                        print(f'solver returned unknown for {ition.name}')
+
+            if not found_transition:
+                print(f'... could not extend trace {t_id} to length {i + 1}')
+                break
+
+    # dump_trace_txt(t_id, traces[t_id], f"trace_{t_id}.txt")
+    dump_trace_csv(t_id, traces[t_id], filename)
 
     return traces
 

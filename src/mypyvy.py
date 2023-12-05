@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import argparse
+import ast
 from datetime import datetime
 import json
 import logging
@@ -21,7 +22,7 @@ import updr
 import utils
 import relaxed_traces
 from trace import bmc_trace
-from trace_dump import generate_traces
+from trace_dump import generate_trace
 
 import pd
 import rethink
@@ -428,7 +429,11 @@ def trace(s: Solver) -> None:
 
 def trace_dump(s: Solver) -> None:
     '''Generate CSV files of random traces of the protocol.'''
-    generate_traces(s)
+    max_length = utils.args.max_length
+    sort_bounds = ast.literal_eval(utils.args.sort_bounds)
+    output_file = utils.args.output_file
+    print(f"generate traces(max_length={max_length}, sort_bounds={sort_bounds}, output_file={output_file})")
+    generate_trace(s, max_length=max_length, sort_sizes=sort_bounds, filename=output_file)
     return
 
 def check_one_bounded_width_invariant(s: Solver) -> None:
@@ -629,6 +634,10 @@ def parse_args(args: List[str]) -> None:
                                help='number of steps to check')
     bmc_subparser.add_argument('--relax', action=utils.YesNoAction, default=False,
                                help='relaxed semantics (domain can decrease)')
+
+    trace_dump_subparser.add_argument('--max-length', help='maximum length of generated traces', type=int, default=25)
+    trace_dump_subparser.add_argument('--sort-bounds', help='list of sort bounds, e.g. [2, 3, 1]', type=str, default=[])
+    trace_dump_subparser.add_argument('--output-file', help='output file', type=str, default='trace-dump.csv')
 
     argparser.add_argument('filename')
 
