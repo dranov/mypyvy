@@ -7,6 +7,7 @@ from logic import *
 from translator import Z3Translator
 from trace import translate_transition_call
 
+import collections
 import copy
 import pandas as pd
 import random
@@ -81,6 +82,108 @@ def mk_trace(s: Solver, num_states: int, sort_sizes: Optional[list[int]] = None,
         print(f"Generating base-trace of length {num_states}")
         trace = check_unsat([], s, num_states, minimize=False, verbose=False)
         return trace
+
+def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[list[int]] = None, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None, filename="trace-dump.csv"):
+    prog = syntax.the_program
+    t1 = s.get_translator(1) # translator for one-state formulas
+    t2 = s.get_translator(2) # translator for two-state formulas
+
+    reached_states = {}
+    # StateID -> (depth, State)
+    to_expand: dict[str, (int, State)] = collections.OrderedDict()
+    transitions_successfully_taken = set()
+    all_transitions = set([ition.name for ition in prog.transitions()])
+
+    def state_id(st: State) -> str:
+        return parse_state_to_str(st, sort_elems, pred_columns)
+
+    def block(s: Solver, st: State):
+        pyv_fmla = Not(st.as_onestate_formula())
+        z3_fmla = t2.translate_expr(pyv_fmla)
+        s.add(z3_fmla)
+
+    def get_post_state(s: Solver, one_state=False) -> Optional[State]:
+        num_states_in_model = 1 if one_state else 2
+        res = s.check()
+        if res == z3.sat:
+            m = Z3Translator.model_to_trace(s.model(minimize=False), num_states_in_model)
+            post = m.as_state(num_states_in_model - 1)
+            return post
+        elif res == z3.unsat:
+            return None
+        elif res == z3.unknown:
+            assert False, "should not be unknown"
+
+    def assert_state(s: Solver, st: State):
+        s.add(t1.translate_expr(st.as_onestate_formula()))
+
+    def assert_transition(s: Solver, ition: DefinitionDecl):
+        call = syntax.TransitionCall(ition.name, None)
+        tid_name = get_transition_indicator(str(i), call.target)
+        tid = z3.Bool(tid_name)
+        tr = translate_transition_call(s, t2, 0, call)
+        s.add(z3.Implies(tid, tr))
+        s.add(tid)
+
+    with s.new_frame():
+        # Bound sort sizes
+        if sort_sizes is not None:
+            for (i, sort) in enumerate(prog.sorts()):
+                b = sort_sizes[i]
+                print(f'bounding {sort} to cardinality {b}')
+                s.add(s._sort_strict_cardinality_constraint(Z3Translator.sort_to_z3(sort), b))
+
+        # Enumerate initial states
+        with s.new_frame():
+            for init in prog.inits():
+                s.add(t1.translate_expr(init.expr))
+
+            while True:
+                st = get_post_state(s, one_state=True)
+                if st is None:
+                    break
+                sid = state_id(st)
+                reached_states[sid] = st
+                to_expand[sid] = (0, st)
+                block(s, st)
+
+        print(f"Found {len(reached_states)} unique initial states!")
+
+        def unexplored_transitions() -> set[str]:
+            return all_transitions.difference(transitions_successfully_taken)
+
+        # Expansion loop
+        while len(reached_states) < max_states or len(unexplored_transitions()) > 0:
+            if len(to_expand) == 0:
+                print("No more states to expand!")
+                break
+
+            # FIFO
+            (key_choice, (depth, rand_state)) = to_expand.popitem(last=False)
+            print(f"Reached {len(reached_states)} states; popped at depth {depth} (unexplored transitions: {unexplored_transitions()}); expanding...")
+
+            # Random choice
+            # key_choice = random.choice(list(to_expand.keys()))
+            # rand_state = to_expand.pop(key_choice)
+
+            with s.new_frame():
+                assert_state(s, rand_state)
+                # Expand with every transition
+                for ition in prog.transitions():
+                    with s.new_frame():
+                        assert_transition(s, ition)
+                        st = get_post_state(s)
+                        if st is not None:
+                            sid = state_id(st)
+                            print(f"{hash(tuple(key_choice))} -> {hash(tuple(sid))} (via {ition.name})")
+                            transitions_successfully_taken.add(ition.name)
+                            if sid not in reached_states:
+                                reached_states[sid] = st
+                                to_expand[sid] = (depth + 1, st)
+
+    fake_trace = [(f"state_{i}", st) for (i, st) in reached_states.items()]
+    dump_trace_csv(fake_trace, filename, sort_elems, pred_columns)
+
 
 # See `pd.py:enumerate_reachable_states`
 def generate_reachable_states(s: Solver, max_states: int = 25, sort_sizes: Optional[list[int]] = None, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None, filename="trace-dump.csv"):
