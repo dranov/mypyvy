@@ -9,8 +9,12 @@ from trace import translate_transition_call
 
 import collections
 import copy
+import numpy as np
 import pandas as pd
 import random
+
+rng = np.random.default_rng(0)
+RAND_ACTION_MAX_ITER = 50
 
 GIVE_UP_AFTER_N_CONSECUTIVE_DUPS = 100
 
@@ -148,38 +152,73 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
                 block(s, st)
 
         print(f"Found {len(reached_states)} unique initial states!")
+        initial_states = reached_states
 
         def unexplored_transitions() -> set[str]:
             return all_transitions.difference(transitions_successfully_taken)
 
-        # Expansion loop
-        while len(reached_states) < max_states or len(unexplored_transitions()) > 0:
-            if len(to_expand) == 0:
-                print("No more states to expand!")
-                break
+        def exhaustive_breadth_first():
+            '''Perform a breadth-first search of the state space.'''
+            # Expansion loop
+            while len(reached_states) < max_states:
+                if len(to_expand) == 0:
+                    print("No more states to expand!")
+                    break
 
-            # FIFO
-            (key_choice, (depth, rand_state)) = to_expand.popitem(last=False)
-            print(f"Reached {len(reached_states)} states; popped at depth {depth} (unexplored transitions: {unexplored_transitions()}); expanding...")
+                # FIFO
+                (key_choice, (depth, rand_state)) = to_expand.popitem(last=False)
+                print(f"Reached {len(reached_states)} states; popped at depth {depth} (unexplored transitions: {unexplored_transitions()}); expanding...")
 
-            # Random choice
-            # key_choice = random.choice(list(to_expand.keys()))
-            # rand_state = to_expand.pop(key_choice)
+                with s.new_frame():
+                    assert_state(s, rand_state)
+                    # Expand with every transition
+                    for ition in prog.transitions():
+                        with s.new_frame():
+                            assert_transition(s, ition)
+                            st = get_post_state(s)
+                            if st is not None:
+                                sid = state_id(st)
+                                print(f"{hash(tuple(key_choice))} -> {hash(tuple(sid))} (via {ition.name})")
+                                transitions_successfully_taken.add(ition.name)
+                                if sid not in reached_states:
+                                    reached_states[sid] = st
+                                    to_expand[sid] = (depth + 1, st)
+        
+        def random_action_expansion(max_simulation_rounds=max_states):
+            '''Repeatedly expand a state with a random enabled transition
+            until no action is enabled anymore.'''
+            simulation_round = 0
+            while simulation_round < max_simulation_rounds:
+                with s.new_frame():
+                    # Random initial state
+                    key_choice = random.choice(list(initial_states.keys()))
+                    st = initial_states.pop(key_choice)
+                    assert_state(s, st)
+                    for curr_iter in range(RAND_ACTION_MAX_ITER):
+                        print(f"Round {simulation_round} | Iteration {curr_iter} | Reached {len(reached_states)} unique states; expanding...")
+                        # Expand with a random enabled transition
+                        enabled_transition = False
+                        transitions = list(prog.transitions())
+                        rng.shuffle(transitions)
+                        for ition in transitions:
+                            with s.new_frame():
+                                assert_transition(s, ition)
+                                post_st = get_post_state(s)
+                                if post_st is not None:
+                                    enabled_transition = True
+                                    pre_sid = state_id(st)
+                                    post_sid = state_id(post_st)
+                                    # print(f"{hash(tuple(pre_sid))} -> {hash(tuple(post_sid))} (via {ition.name})")
+                                    reached_states[post_sid] = post_st
+                                    st = post_st # Move to next iteration
+                                    break
+                        if not enabled_transition:
+                            print(f"Advancing to next simulation round ({simulation_round})...")
+                            break
+                simulation_round += 1
 
-            with s.new_frame():
-                assert_state(s, rand_state)
-                # Expand with every transition
-                for ition in prog.transitions():
-                    with s.new_frame():
-                        assert_transition(s, ition)
-                        st = get_post_state(s)
-                        if st is not None:
-                            sid = state_id(st)
-                            print(f"{hash(tuple(key_choice))} -> {hash(tuple(sid))} (via {ition.name})")
-                            transitions_successfully_taken.add(ition.name)
-                            if sid not in reached_states:
-                                reached_states[sid] = st
-                                to_expand[sid] = (depth + 1, st)
+        # exhaustive_breadth_first()
+        random_action_expansion()
 
     fake_trace = [(f"state_{i}", st) for (i, st) in reached_states.items()]
     dump_trace_csv(fake_trace, filename, sort_elems, pred_columns)
