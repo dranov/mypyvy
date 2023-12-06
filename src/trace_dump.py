@@ -12,9 +12,12 @@ import copy
 import numpy as np
 import pandas as pd
 import random
+import sys
 
 rng = np.random.default_rng(0)
 RAND_ACTION_MAX_ITER = 50
+
+GIVE_UP_AFTER_N_UNEVENTFUL_SIMULATIONS = 10
 
 GIVE_UP_AFTER_N_CONSECUTIVE_DUPS = 100
 
@@ -129,6 +132,9 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
         s.add(z3.Implies(tid, tr))
         s.add(tid)
 
+    def unexplored_transitions() -> set[str]:
+        return all_transitions.difference(transitions_successfully_taken)
+
     with s.new_frame():
         # Bound sort sizes
         if sort_sizes is not None:
@@ -152,23 +158,36 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
                 block(s, st)
 
         print(f"Found {len(reached_states)} unique initial states!")
-        initial_states = reached_states
+        initial_states = copy.deepcopy(reached_states)
 
-        def unexplored_transitions() -> set[str]:
-            return all_transitions.difference(transitions_successfully_taken)
-
-        def exhaustive_breadth_first():
-            '''Perform a breadth-first search of the state space.'''
+        def exhaustive_breadth_first(max_states=max_states):
+            '''Perform a breadth-first search of the state space. Stop
+            expanding at depth two more than when all transitions are explored,
+            AND `max_states` states are reached.'''
+            stop_depth = sys.maxsize
+            last_depth = 0
             # Expansion loop
-            while len(reached_states) < max_states:
+            while True:
                 if len(to_expand) == 0:
                     print("No more states to expand!")
                     break
 
+                if last_depth >= stop_depth:
+                    print(f"Reached maximum depth {stop_depth}!")
+                    break
+
+                if len(reached_states) >= max_states:
+                    print(f"Reached maximum number of states {max_states}!")
+                    break
+                
+                if len(unexplored_transitions()) == 0 and stop_depth == sys.maxsize:
+                    stop_depth = last_depth + 2
+            
                 # FIFO
                 (key_choice, (depth, rand_state)) = to_expand.popitem(last=False)
-                print(f"Reached {len(reached_states)} states; popped at depth {depth} (unexplored transitions: {unexplored_transitions()}); expanding...")
-
+                last_depth = max(last_depth, depth)
+                stop_depth_str = 'INF' if stop_depth == sys.maxsize else str(stop_depth) 
+                print(f"Reached {len(reached_states)} states; popped at depth {depth}/{stop_depth_str} (unexplored transitions: {unexplored_transitions()}); expanding...")
                 with s.new_frame():
                     assert_state(s, rand_state)
                     # Expand with every transition
@@ -178,7 +197,7 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
                             st = get_post_state(s)
                             if st is not None:
                                 sid = state_id(st)
-                                print(f"{hash(tuple(key_choice))} -> {hash(tuple(sid))} (via {ition.name})")
+                                # print(f"{hash(tuple(key_choice))} -> {hash(tuple(sid))} (via {ition.name})")
                                 transitions_successfully_taken.add(ition.name)
                                 if sid not in reached_states:
                                     reached_states[sid] = st
@@ -188,11 +207,12 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
             '''Repeatedly expand a state with a random enabled transition
             until no action is enabled anymore.'''
             simulation_round = 0
+            (num_eventful_simulations, last_len_reached) = (0, len(reached_states))
             while simulation_round < max_simulation_rounds:
                 with s.new_frame():
                     # Random initial state
                     key_choice = random.choice(list(initial_states.keys()))
-                    st = initial_states.pop(key_choice)
+                    st = initial_states[key_choice]
                     assert_state(s, st)
                     for curr_iter in range(RAND_ACTION_MAX_ITER):
                         print(f"Round {simulation_round} | Iteration {curr_iter} | Reached {len(reached_states)} unique states; expanding...")
@@ -215,9 +235,17 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
                         if not enabled_transition:
                             print(f"Advancing to next simulation round ({simulation_round})...")
                             break
+                    if len(reached_states) == last_len_reached:
+                        num_eventful_simulations += 1
+                        if num_eventful_simulations >= GIVE_UP_AFTER_N_UNEVENTFUL_SIMULATIONS:
+                            print(f"Reached {len(reached_states)} unique states; giving up after {num_eventful_simulations} uneventful simulations")
+                            break
+                    else:
+                        num_eventful_simulations = 0
+                        last_len_reached = len(reached_states)
                 simulation_round += 1
 
-        # exhaustive_breadth_first()
+        exhaustive_breadth_first()
         random_action_expansion()
 
     fake_trace = [(f"state_{i}", st) for (i, st) in reached_states.items()]
