@@ -22,7 +22,7 @@ import updr
 import utils
 import relaxed_traces
 from trace import bmc_trace
-from trace_dump import generate_trace
+from trace_dump import generate_trace, generate_reachable_states
 
 import pd
 import rethink
@@ -435,7 +435,8 @@ def trace_dump(s: Solver) -> None:
     sort_elems = ast.literal_eval(utils.args.sort_elems) if utils.args.sort_elems else None
     pred_columns = ast.literal_eval(utils.args.pred_columns) if utils.args.pred_columns else None
     print(f"generate traces(max_length={max_length}, sort_bounds={sort_bounds}, output_file={output_file})")
-    generate_trace(s, max_length=max_length, sort_sizes=sort_bounds, sort_elems=sort_elems, pred_columns=pred_columns,filename=output_file)
+    # generate_trace(s, max_length=max_length, sort_sizes=sort_bounds, sort_elems=sort_elems, pred_columns=pred_columns,filename=output_file)
+    generate_reachable_states(s, max_states=max_length, sort_sizes=sort_bounds, sort_elems=sort_elems, pred_columns=pred_columns,filename=output_file)
     return
 
 def check_one_bounded_width_invariant(s: Solver) -> None:

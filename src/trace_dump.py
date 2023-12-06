@@ -80,9 +80,102 @@ def mk_trace(s: Solver, num_states: int, sort_sizes: Optional[list[int]] = None,
         print(f"Generating base-trace of length {num_states}")
         trace = check_unsat([], s, num_states, minimize=False, verbose=False)
         return trace
-        
+
 # See `pd.py:enumerate_reachable_states`
+def generate_reachable_states(s: Solver, max_states: int = 25, sort_sizes: Optional[list[int]] = None, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None, filename="trace-dump.csv"):
+    '''Generates list of reachable states, not necesarily valid traces.'''
+    prog = syntax.the_program
+    t1 = s.get_translator(1) # translator for one-state formulas
+    t2 = s.get_translator(2) # translator for two-state formulas
+
+    blocked_fingerprints = set()
+    blocked_states: list[State] = []
+    # reachable states at a certain depth
+    reachable_states: dict[int, list[State]] = {0: []}
+    num_states = 0
+    # These are pre-depths
+    available_depths = set([-1])
+
+    def block_state(s: Solver, m: State, d: int):
+        nonlocal blocked_states
+        if d == 0:
+            pyv_fmla = Not(m.as_onestate_formula())
+            z3_fmla = t1.translate_expr(pyv_fmla)
+        else:
+            pyv_fmla = New(Not(m.as_onestate_formula()))
+            z3_fmla = t2.translate_expr(pyv_fmla)
+        # print(f'blocking state {hash(m)}')
+        blocked_states.append(m)
+        blocked_fingerprints.add(hash(m))
+        s.add(z3_fmla)
+
+    def assert_state_at_depth(s: Solver, d: int):
+        with s.new_frame():
+            if d <= 0:
+                for init in prog.inits():
+                    s.add(t1.translate_expr(init.expr))
+            else:
+                # Pick one of the reachable states at depth d - 1
+                pres = [t1.translate_expr(m.as_onestate_formula()) for m in reachable_states[d - 1]]
+                s.add(z3.Or(*pres))
+
+                # Assert any transition from that state
+                tids = []
+                for ition in prog.transitions():
+                    call = syntax.TransitionCall(ition.name, None)
+                    tid_name = get_transition_indicator(str(i), call.target)
+                    tid = z3.Bool(tid_name)
+                    # FIXME: should this be 0?
+                    s.add(z3.Implies(tid, translate_transition_call(s, t2, 0, call)))
+                    tids.append(tid)
+                s.add(z3.Or(*tids))
+
+    def get_and_record_state(s: Solver, d: int) -> Optional[State]:
+        nonlocal reachable_states, num_states, available_depths
+        num_states_in_model = 1 if d == 0 else 2
+
+        res = s.check()
+        if res == z3.sat: 
+            m = Z3Translator.model_to_trace(s.model(minimize=False), num_states_in_model)
+            post = m.as_state(num_states_in_model - 1)
+            # print(f'... found state {hash(post)} at depth {d}')
+            reachable_states[d] = reachable_states.get(d, [])
+            reachable_states[d].append(post)
+            num_states += 1
+            available_depths.add(d)
+            return post
+        elif res == z3.unsat:
+            return None
+        elif res == z3.unknown:
+            assert False, "should not be unknown"
+           
+    with s.new_frame():
+        # Bound sort sizes
+        if sort_sizes is not None:
+            for (i, sort) in enumerate(prog.sorts()):
+                b = sort_sizes[i]
+                print(f'bounding {sort} to cardinality {b}')
+                s.add(s._sort_strict_cardinality_constraint(Z3Translator.sort_to_z3(sort), b))
+
+        while num_states < max_states:
+            # Pick an available pre-depth
+            d = random.choice(list(available_depths))
+            # d = -1
+            diag = [len(reachable_states[k]) for k in sorted(list(reachable_states.keys()))]
+            print(f'{num_states}/{max_states}: diag {diag} | chosen depth {d}')
+            # print(f"blocked states: {blocked_fingerprints}")
+            # import pdb; pdb.set_trace()
+
+            assert_state_at_depth(s, d)
+            st = get_and_record_state(s, d + 1)
+            if st is not None:
+                block_state(s, st, d + 1)
+
+    fake_trace = [(f"state_{i}", st) for (i, st) in enumerate(blocked_states)]
+    dump_trace_csv(fake_trace, filename, sort_elems, pred_columns)
+
 def generate_trace(s: Solver, max_length: int = 25, sort_sizes: Optional[list[int]] = None, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None, filename="trace-dump.csv", base_length: int = 5) -> dict[int, list[(str, State)]]:
+    '''Generates valid traces, i.e. sequences of states.'''
     assert max_length >= base_length, f"max_length ({max_length}) must be >= base_length ({base_length})"
 
     prog = syntax.the_program
@@ -137,6 +230,9 @@ def generate_trace(s: Solver, max_length: int = 25, sort_sizes: Optional[list[in
 
                 with s.new_frame():
                     s.add(t2.translate_expr(ition.as_twostate_formula(prog.scope)))
+                    # Block previous state: we don't want no-ops
+                    s.add(t2.translate_expr(New(Not(last_state.as_onestate_formula()))))
+
                     res = s.check()
                     if res == z3.sat:
                         m = Z3Translator.model_to_trace(s.model(minimize=False), 2)
@@ -155,7 +251,7 @@ def generate_trace(s: Solver, max_length: int = 25, sort_sizes: Optional[list[in
                 break
 
     # dump_trace_txt(t_id, traces[t_id], f"trace_{t_id}.txt")
-    dump_trace_csv(t_id, traces[t_id], filename, sort_elems, pred_columns)
+    dump_trace_csv(traces[t_id], filename, sort_elems, pred_columns)
 
     return traces
 
@@ -168,7 +264,7 @@ def dump_trace_txt(id: int, tr: list[(str, State)], filename: str):
             else:
                 f.write(f'transition {tname}\n\nstate {i}:\n\n{state}\n\n')
 
-def dump_trace_csv(i: int, tr: list[(str, State)], filename: str, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None):
+def dump_trace_csv(tr: list[(str, State)], filename: str, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None):
     print(f"Dumping trace to {filename}...")
     def elem_to_univ_name(elem: str) -> str:
         # FIXME: make this work with more than 10 elements

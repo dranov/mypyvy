@@ -193,7 +193,11 @@ class Trace:
                     )
                     rels[R].append(e if ans else syntax.Not(e))
             for C, c in chain(mut_const_interps.items(), self.immut_const_interps.items()):
-                consts[C] = syntax.Eq(syntax.Id(C.name), syntax.Id(c))
+                if isinstance(C.sort, syntax._BoolSort):
+                    cbool = True if c == 'true' else False
+                    consts[C] = syntax.Eq(syntax.Id(C.name), syntax.Bool(cbool))
+                else:
+                    consts[C] = syntax.Eq(syntax.Id(C.name), syntax.Id(c))
             for F, fl in chain(mut_func_interps.items(), self.immut_func_interps.items()):
                 funcs[F] = [
                     syntax.Eq(syntax.AppExpr(F.name, tuple(syntax.Id(col) for col in tup)),
@@ -405,6 +409,9 @@ class State(FirstOrderStructure):
             FrozenSet[Tuple[str, Tuple[int, ...]]],
             FrozenSet[Tuple[Tuple[str, str], bool]],
     ]
+
+    def __hash__(self):
+        return hash(self.fingerprint)
 
     @property
     def fingerprint(self) -> Fingerprint:
