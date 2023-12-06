@@ -435,9 +435,54 @@ def trace_dump(s: Solver) -> None:
     sort_elems = ast.literal_eval(utils.args.sort_elems) if utils.args.sort_elems else None
     pred_columns = ast.literal_eval(utils.args.pred_columns) if utils.args.pred_columns else None
     print(f"generate traces(max_length={max_length}, sort_bounds={sort_bounds}, output_file={output_file})")
-    # generate_trace(s, max_length=max_length, sort_sizes=sort_bounds, sort_elems=sort_elems, pred_columns=pred_columns,filename=output_file)
-    # generate_reachable_states(s, max_states=max_length, sort_sizes=sort_bounds, sort_elems=sort_elems, pred_columns=pred_columns,filename=output_file)
-    expand_explicit_state(s, max_states=max_length, sort_sizes=sort_bounds, sort_elems=sort_elems, pred_columns=pred_columns,filename=output_file)
+
+    pyv_sorts = {}
+
+    prog_decls = syntax.the_program.decls
+    # Bound sort sizes (strictly) and add to the program
+    # constants for every sort element.
+    def add_pyv_sort_strict_cardinality_constraint(sort_decl, b):
+        # (exists A, B, C. (forall X. X = A | X = B | X = C) & distinct(A, B, C))
+        def elem_name(sn:str, i: int) -> str:
+            return f"__{sn}{i}"
+
+        sn = sort_decl.name
+        sort = syntax.UninterpretedSort(sort_decl.name)
+        pyv_sorts[sn] = []
+
+        # Add `b` constants to the program
+        for i in range(b):
+            name = f"{elem_name(sn,i)}"
+            pyv_sorts[sn].append(name)
+            cnst = syntax.ConstantDecl(name, sort, mutable=False)
+            prog_decls.append(cnst)
+
+        fa_binders = [syntax.SortedVar(f"X", sort)]
+        disjuncts = [syntax.Eq(syntax.Id(f"X"), syntax.Id(f"{elem_name(sn,i)}")) for i in range(b)]            
+        
+        uv_fmla = syntax.Forall(fa_binders, syntax.Or(*disjuncts))
+        distinct = syntax.TrueExpr
+        if b >= 2:
+            distinct = syntax.NaryExpr("DISTINCT", ([syntax.Id(f"{elem_name(sn,i)}") for i in range(b)]))
+        card_constraint = syntax.And(uv_fmla, distinct)
+        decl = syntax.AxiomDecl(f"{sn}_card", card_constraint)
+        prog_decls.append(decl)
+
+    for (i, sort_decl) in enumerate(syntax.the_program.sorts()):
+        add_pyv_sort_strict_cardinality_constraint(sort_decl, sort_bounds[i])
+
+    prog = Program(prog_decls)
+    if not typecheck_program(prog):
+        utils.logger.always_print('program has resolution errors.')
+        utils.exit(1)
+    syntax.the_program = prog
+
+    with open("rewritten.pyv", "w") as f:
+        f.write(str(prog))
+
+    s = Solver(use_cvc4=utils.args.cvc4)
+    
+    expand_explicit_state(s, max_states=max_length, pyv_sort_elems=pyv_sorts, duo_sort_elems=sort_elems, pred_columns=pred_columns,filename=output_file)
     return
 
 def check_one_bounded_width_invariant(s: Solver) -> None:

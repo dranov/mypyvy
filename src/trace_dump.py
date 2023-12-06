@@ -17,7 +17,7 @@ import sys
 rng = np.random.default_rng(0)
 RAND_ACTION_MAX_ITER = 50
 
-GIVE_UP_AFTER_N_UNEVENTFUL_SIMULATIONS = sys.maxsize
+GIVE_UP_AFTER_N_UNEVENTFUL_SIMULATIONS = 5
 
 def add_diversity_constraints(s: Solver, tr: dict[int, dict[str, z3.Bool]]):
     prog = syntax.the_program
@@ -39,7 +39,7 @@ def add_diversity_constraints(s: Solver, tr: dict[int, dict[str, z3.Bool]]):
 
     return
 
-def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[list[int]] = None, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None, filename="trace-dump.csv"):
+def expand_explicit_state(s: Solver, max_states: int = 25, pyv_sort_elems: Optional[dict[str, list[str]]] = None, duo_sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None, filename="trace-dump.csv"):
     prog = syntax.the_program
     t1 = s.get_translator(1) # translator for one-state formulas
     t2 = s.get_translator(2) # translator for two-state formulas
@@ -74,9 +74,23 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
     def assert_state(s: Solver, st: State):
         s.add(t1.translate_expr(st.as_onestate_formula()))
 
-    def assert_transition(s: Solver, ition: DefinitionDecl):
+    def assert_transition_any_args(s: Solver, ition: DefinitionDecl):
         call = syntax.TransitionCall(ition.name, None)
-        tid_name = get_transition_indicator(str(i), call.target)
+        tid_name = get_transition_indicator('0', call.target)
+        tid = z3.Bool(tid_name)
+        tr = translate_transition_call(s, t2, 0, call)
+        s.add(z3.Implies(tid, tr))
+        s.add(tid)
+
+    def assert_transition_random_args(s: Solver, ition: DefinitionDecl):
+        def random_var(sort_decl):
+            return rng.choice(pyv_sort_elems[sort_decl.name])
+        args = []
+        for b in ition.binder.vs:
+            args.append(Id(random_var(b.sort)))
+        # print(f"{ition.name}({','.join(map(str, args))})")
+        call = syntax.TransitionCall(ition.name, args)
+        tid_name = get_transition_indicator('0', call.target)
         tid = z3.Bool(tid_name)
         tr = translate_transition_call(s, t2, 0, call)
         s.add(z3.Implies(tid, tr))
@@ -86,13 +100,6 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
         return all_transitions.difference(transitions_successfully_taken)
 
     with s.new_frame():
-        # Bound sort sizes
-        if sort_sizes is not None:
-            for (i, sort) in enumerate(prog.sorts()):
-                b = sort_sizes[i]
-                print(f'bounding {sort} to cardinality {b}')
-                s.add(s._sort_strict_cardinality_constraint(Z3Translator.sort_to_z3(sort), b))
-
         # Enumerate initial states
         with s.new_frame():
             for init in prog.inits():
@@ -143,7 +150,10 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
                     # Expand with every transition
                     for ition in prog.transitions():
                         with s.new_frame():
-                            assert_transition(s, ition)
+                            # FIXME: we need to try EVERY possible argument
+                            assert_transition_any_args(s, ition)
+                            # FIXME: ... and get all possible post states for each argument
+                            # (by blocking previously seen post-states)
                             st = get_post_state(s)
                             if st is not None:
                                 sid = state_id(st)
@@ -172,7 +182,8 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
                         rng.shuffle(transitions)
                         for ition in transitions:
                             with s.new_frame():
-                                assert_transition(s, ition)
+                                # assert_transition_any_args(s, ition)
+                                assert_transition_random_args(s, ition)
                                 post_st = get_post_state(s)
                                 if post_st is not None:
                                     enabled_transition = True
@@ -195,11 +206,11 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
                         last_len_reached = len(reached_states)
                 simulation_round += 1
 
-        exhaustive_breadth_first()
+        # exhaustive_breadth_first()
         random_action_expansion()
 
     fake_trace = [(f"state_{i}", st) for (i, st) in reached_states.items()]
-    dump_trace_csv(fake_trace, filename, sort_elems, pred_columns)
+    dump_trace_csv(fake_trace, filename, duo_sort_elems, pred_columns)
 
 
 def dump_trace_csv(tr: list[(str, State)], filename: str, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None):
@@ -214,7 +225,7 @@ def dump_trace_csv(tr: list[(str, State)], filename: str, sort_elems: Optional[d
     df.sort_values(df.columns.tolist(), inplace=True)
     df.drop_duplicates(inplace=True)
     df.to_csv(filename, index=False)
-    
+
 def parse_state_to_str(st: State, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None) -> str:
     (d, _sorts) = parse_state(st, sort_elems, pred_columns)
     df = pd.DataFrame([d])
@@ -224,7 +235,8 @@ def parse_state_to_str(st: State, sort_elems: Optional[dict[tuple[int], list[str
 def parse_state(st: State, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None) -> dict[str, bool]:
     def elem_to_univ_name(elem: str) -> str:
         # FIXME: make this work with more than 10 elements
-        return str.upper(elem[0]) + str(int(elem[-1]) + 1)
+        # return str.upper(elem[0]) + str(int(elem[-1]) + 1)
+        return elem
 
     d = {}  # dictionary to dump everything into
 
@@ -244,13 +256,17 @@ def parse_state(st: State, sort_elems: Optional[dict[tuple[int], list[str]]] = N
             sorts[sort.name] = sort_elems[sort.name]
             for (i, elem) in enumerate(elems):
                 to_duo[elem] = sort_elems[sort.name][i]
-                to_mypyvy[sort_elems[sort.name][i]] = elem
+                to_mypyvy[sort_elems[sort.name][i]] = f"__{elem}"
 
     def eval_duo_expr(dexpr: str, in_st:State):
         e = parser.parse_expr(dexpr)
         subst = { Id(k):Id(v) for (k, v) in to_mypyvy.items() }
-        en = syntax.subst_vars_simple(e, subst)
-        interp = in_st.eval(en)
+        en = syntax.subst(syntax.the_program.scope, e, subst)
+        return eval_pyv_expr(str(en), in_st)
+    
+    def eval_pyv_expr(pexpr: str, in_st:State):
+        e = parse_and_typecheck_expr(pexpr, 1, close_free_vars=True)
+        interp = in_st.eval(e)
         # Fix for booleans
         if isinstance(interp, dict) and () in interp:
             interp = True if interp[()] else False
@@ -261,26 +277,8 @@ def parse_state(st: State, sort_elems: Optional[dict[tuple[int], list[str]]] = N
 
     # Dump predicates (DuoAI)
     if pred_columns is not None:
-        # HACK: add constants for all sort elements to the state
-        # so we can evaluate the expression. We need to artificially
-        # create some inner state to make this work.
-        new_constants = {}
-        for (sort_decl, elems) in st.univs.items():
-            for elem in elems:
-                _sort = UninterpretedSort(sort_decl.name)
-                _sort.decl = sort_decl
-                cnst = ConstantDecl(elem, _sort, mutable=False)
-                new_constants[cnst] = elem
-        st.trace.immut_const_interps.update(new_constants)
-        # add our fake constants to the scope
-        orig_scope = copy.deepcopy(syntax.the_program.scope)
-        for cnst in new_constants.keys():
-            syntax.the_program.scope.add_constant(cnst)
-
         for pred in pred_columns:
             d[pred] = eval_duo_expr(pred, st)
-
-        syntax.the_program.scope = orig_scope # restore original scope
     # Dump predicate (no DuoAI)
     else:
         # Dump constants/individuals

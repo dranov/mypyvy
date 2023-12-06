@@ -417,14 +417,14 @@ class State(FirstOrderStructure):
                 for x in sorted(self.univs[s]):
                     d.append((s.name, x))
 
-            for C in sorted(self.const_interps.keys()):
+            for C in sorted(self.const_interps.keys(), key=lambda k: k.name):
                 interp = self.const_interps[C]
                 # Fix for booleans
                 if isinstance(interp, dict) and () in interp:
                     interp = True if interp[()] else False
-                elif isinstance(interp, str):
-                    assert interp in ['true', 'false']
-                    interp = False if interp == 'false' else True
+                # elif isinstance(interp, str):
+                #     assert interp in ['true', 'false']
+                #     interp = False if interp == 'false' else True
                 d.append((C.name, interp))
 
             for R in sorted(self.rel_interps.keys(), key=lambda k: k.name):
