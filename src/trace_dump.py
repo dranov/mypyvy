@@ -89,9 +89,9 @@ def generate_reachable_states(s: Solver, max_states: int = 25, sort_sizes: Optio
     t2 = s.get_translator(2) # translator for two-state formulas
 
     blocked_fingerprints = set()
-    blocked_states: list[State] = []
+    blocked_states: set[State] = set()
     # reachable states at a certain depth
-    reachable_states: dict[int, list[State]] = {0: []}
+    reachable_states: dict[int, set[State]] = {0: set()}
     num_states = 0
     # These are pre-depths
     available_depths = set([-1])
@@ -104,9 +104,10 @@ def generate_reachable_states(s: Solver, max_states: int = 25, sort_sizes: Optio
         else:
             pyv_fmla = New(Not(m.as_onestate_formula()))
             z3_fmla = t2.translate_expr(pyv_fmla)
-        # print(f'blocking state {hash(m)}')
-        blocked_states.append(m)
+        print(f'blocking state {hash(m)} at depth {d}')
+        assert hash(m) not in blocked_fingerprints, f"state {hash(m)} already blocked!"
         blocked_fingerprints.add(hash(m))
+        blocked_states.add(m)
         s.add(z3_fmla)
 
     def assert_state_at_depth(s: Solver, d: int):
@@ -139,8 +140,8 @@ def generate_reachable_states(s: Solver, max_states: int = 25, sort_sizes: Optio
             m = Z3Translator.model_to_trace(s.model(minimize=False), num_states_in_model)
             post = m.as_state(num_states_in_model - 1)
             # print(f'... found state {hash(post)} at depth {d}')
-            reachable_states[d] = reachable_states.get(d, [])
-            reachable_states[d].append(post)
+            reachable_states[d] = reachable_states.get(d, set())
+            reachable_states[d].add(post)
             num_states += 1
             available_depths.add(d)
             return post
@@ -165,13 +166,60 @@ def generate_reachable_states(s: Solver, max_states: int = 25, sort_sizes: Optio
             print(f'{num_states}/{max_states}: diag {diag} | chosen depth {d}')
             # print(f"blocked states: {blocked_fingerprints}")
             # import pdb; pdb.set_trace()
+            st = None
 
-            assert_state_at_depth(s, d)
-            st = get_and_record_state(s, d + 1)
+            s.push()
+
+            # assert_state_at_depth(s, d)
+            with s.new_frame():
+                if d <= 0:
+                    for init in prog.inits():
+                        s.add(t1.translate_expr(init.expr))
+                else:
+                    # Pick one of the reachable states at depth d - 1
+                    pres = [t1.translate_expr(m.as_onestate_formula()) for m in reachable_states[d - 1]]
+                    s.add(z3.Or(*pres))
+
+                    # Assert any transition from that state
+                    tids = []
+                    for ition in prog.transitions():
+                        call = syntax.TransitionCall(ition.name, None)
+                        tid_name = get_transition_indicator(str(i), call.target)
+                        tid = z3.Bool(tid_name)
+                        # FIXME: should this be 0?
+                        s.add(z3.Implies(tid, translate_transition_call(s, t2, 0, call)))
+                        tids.append(tid)
+                    s.add(z3.Or(*tids))
+
+                # st = get_and_record_state(s, d + 1)
+                num_states_in_model = 1 if d + 1 == 0 else 2
+                # import pdb; pdb.set_trace()
+
+                # print(s.assertions())
+                res = s.check()
+                if res == z3.sat: 
+                    m = Z3Translator.model_to_trace(s.model(minimize=False), num_states_in_model)
+                    post = m.as_state(num_states_in_model - 1)
+                    # print(f'... found state {hash(post)} at depth {d}')
+                    reachable_states[d + 1] = reachable_states.get(d + 1, set())
+                    reachable_states[d + 1].add(post)
+                    num_states += 1
+                    available_depths.add(d + 1)
+                    print(parse_state_to_str(post, sort_elems, pred_columns))
+                    st = post
+                elif res == z3.unsat:
+                    st = None
+                elif res == z3.unknown:
+                    assert False, "should not be unknown"
+
             if st is not None:
-                block_state(s, st, d + 1)
+                # block_state(s, st, d + 1)
+                pass
 
-    fake_trace = [(f"state_{i}", st) for (i, st) in enumerate(blocked_states)]
+    reached_states = set()
+    for states in reachable_states.values():
+        reached_states.update(states)
+    fake_trace = [(f"state_{i}", st) for (i, st) in enumerate(reached_states)]
     dump_trace_csv(fake_trace, filename, sort_elems, pred_columns)
 
 def generate_trace(s: Solver, max_length: int = 25, sort_sizes: Optional[list[int]] = None, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None, filename="trace-dump.csv", base_length: int = 5) -> dict[int, list[(str, State)]]:
@@ -266,95 +314,8 @@ def dump_trace_txt(id: int, tr: list[(str, State)], filename: str):
 
 def dump_trace_csv(tr: list[(str, State)], filename: str, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None):
     print(f"Dumping trace to {filename}...")
-    def elem_to_univ_name(elem: str) -> str:
-        # FIXME: make this work with more than 10 elements
-        return str.upper(elem[0]) + str(int(elem[-1]) + 1)
-    
 
-    def parse_state(st: State) -> dict[str, bool]:
-        nonlocal sort_elems, pred_columns
-        d = {}  # dictionary to dump everything into
-
-        # mapping from mypyvy sort element name (e.g. 'epoch0') to
-        # DuoAI sort element name (e.g. 'E1')
-        to_duo = {}
-        to_mypyvy = {}
-
-        # Parse sorts
-        sorts = {}
-        for (sort, elems) in st.univs.items():
-            if sort_elems is None:
-                sorts[sort.name] = list(map(elem_to_univ_name, elems))
-            else:
-                assert sort.name in sort_elems, f"sort {sort.name} not found in sort_elems"
-                assert len(elems) == len(sort_elems[sort.name]), f"sort {sort.name} has {len(elems)} elements but sort_elems has {len(sort_elems[sort.name])} elements"
-                sorts[sort.name] = sort_elems[sort.name]
-                for (i, elem) in enumerate(elems):
-                    to_duo[elem] = sort_elems[sort.name][i]
-                    to_mypyvy[sort_elems[sort.name][i]] = elem
-
-        def eval_duo_expr(dexpr: str, in_st:State):
-            e = parser.parse_expr(dexpr)
-            subst = { Id(k):Id(v) for (k, v) in to_mypyvy.items() }
-            en = syntax.subst_vars_simple(e, subst)
-            interp = in_st.eval(en)
-            # Fix for booleans
-            if isinstance(interp, dict) and () in interp:
-                interp = True if interp[()] else False
-            return interp
-
-        # Dump predicates (DuoAI)
-        if pred_columns is not None:
-            # HACK: add constants for all sort elements to the state
-            # so we can evaluate the expression. We need to artificially
-            # create some inner state to make this work.
-            new_constants = {}
-            for (sort_decl, elems) in st.univs.items():
-                for elem in elems:
-                    _sort = UninterpretedSort(sort_decl.name)
-                    _sort.decl = sort_decl
-                    cnst = ConstantDecl(elem, _sort, mutable=False)
-                    new_constants[cnst] = elem
-            st.trace.immut_const_interps.update(new_constants)
-            # add our fake constants to the scope
-            orig_scope = copy.deepcopy(syntax.the_program.scope)
-            for cnst in new_constants.keys():
-                syntax.the_program.scope.add_constant(cnst)
-
-            for pred in pred_columns:
-                d[pred] = eval_duo_expr(pred, st)
-
-            syntax.the_program.scope = orig_scope # restore original scope
-        # Dump predicate (no DuoAI)
-        else:
-            # Dump constants/individuals
-            for (const, interp) in st.const_interps.items():
-                # Special case for booleans
-                if isinstance(const.sort, syntax._BoolSort):
-                    d[const.name] = True if interp[()] else False
-                else:
-                    sort = const.sort.name
-                    assert sort in sorts, f"sort {sort} not found in initial state"
-                    interp = elem_to_univ_name(interp)
-                    for elem in sorts[sort]:
-                        name = f"{const.name}={elem}"
-                        d[name] = True if elem == interp else False
-
-            # Dump relations
-            for (rel, interp) in st.rel_interps.items():
-                if rel.arity == 0:
-                    d[rel.name] = True if interp else False
-                else:
-                    for (args, val) in interp.items():
-                        name = f"{rel.name}({','.join(map(elem_to_univ_name, args))})"
-                        d[name] = True if val else False
-
-            # TODO: handle functions; it's a bit unclear what DuoAI's
-            # translate.py does for them.
-
-        return (d, sorts)
-
-    xs = [parse_state(st) for (_tname, st) in tr]
+    xs = [parse_state(st, sort_elems, pred_columns) for (_tname, st) in tr]
     # Sanity check: all sorts are the same
     assert all(x[1] == xs[0][1] for x in xs), "sorts must be the same across all states in a trace"
     xs = [x[0] for x in xs]
@@ -366,3 +327,98 @@ def dump_trace_csv(tr: list[(str, State)], filename: str, sort_elems: Optional[d
 def dump_traces(traces: dict[int, list[(str, State)]], base_filename: str):
     for i in traces.keys():
         dump_trace_txt(i, traces[i], f"{base_filename}_{i}.txt")
+
+def parse_state_to_str(st: State, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None) -> str:
+    (d, _sorts) = parse_state(st, sort_elems, pred_columns)
+    df = pd.DataFrame([d])
+    df.replace({False: 0, True: 1}, inplace=True)
+    return str(df.loc[0].values.tolist())
+
+def parse_state(st: State, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None) -> dict[str, bool]:
+    def elem_to_univ_name(elem: str) -> str:
+        # FIXME: make this work with more than 10 elements
+        return str.upper(elem[0]) + str(int(elem[-1]) + 1)
+
+    d = {}  # dictionary to dump everything into
+
+    # mapping from mypyvy sort element name (e.g. 'epoch0') to
+    # DuoAI sort element name (e.g. 'E1')
+    to_duo = {}
+    to_mypyvy = {}
+
+    # Parse sorts
+    sorts = {}
+    for (sort, elems) in st.univs.items():
+        if sort_elems is None:
+            sorts[sort.name] = list(map(elem_to_univ_name, elems))
+        else:
+            assert sort.name in sort_elems, f"sort {sort.name} not found in sort_elems"
+            assert len(elems) == len(sort_elems[sort.name]), f"sort {sort.name} has {len(elems)} elements but sort_elems has {len(sort_elems[sort.name])} elements"
+            sorts[sort.name] = sort_elems[sort.name]
+            for (i, elem) in enumerate(elems):
+                to_duo[elem] = sort_elems[sort.name][i]
+                to_mypyvy[sort_elems[sort.name][i]] = elem
+
+    def eval_duo_expr(dexpr: str, in_st:State):
+        e = parser.parse_expr(dexpr)
+        subst = { Id(k):Id(v) for (k, v) in to_mypyvy.items() }
+        en = syntax.subst_vars_simple(e, subst)
+        interp = in_st.eval(en)
+        # Fix for booleans
+        if isinstance(interp, dict) and () in interp:
+            interp = True if interp[()] else False
+        if isinstance(interp, str):
+            assert interp in ['true', 'false']
+            interp = False if interp == 'false' else True
+        return interp
+
+    # Dump predicates (DuoAI)
+    if pred_columns is not None:
+        # HACK: add constants for all sort elements to the state
+        # so we can evaluate the expression. We need to artificially
+        # create some inner state to make this work.
+        new_constants = {}
+        for (sort_decl, elems) in st.univs.items():
+            for elem in elems:
+                _sort = UninterpretedSort(sort_decl.name)
+                _sort.decl = sort_decl
+                cnst = ConstantDecl(elem, _sort, mutable=False)
+                new_constants[cnst] = elem
+        st.trace.immut_const_interps.update(new_constants)
+        # add our fake constants to the scope
+        orig_scope = copy.deepcopy(syntax.the_program.scope)
+        for cnst in new_constants.keys():
+            syntax.the_program.scope.add_constant(cnst)
+
+        for pred in pred_columns:
+            d[pred] = eval_duo_expr(pred, st)
+
+        syntax.the_program.scope = orig_scope # restore original scope
+    # Dump predicate (no DuoAI)
+    else:
+        # Dump constants/individuals
+        for (const, interp) in st.const_interps.items():
+            # Special case for booleans
+            if isinstance(const.sort, syntax._BoolSort):
+                d[const.name] = True if interp[()] else False
+            else:
+                sort = const.sort.name
+                assert sort in sorts, f"sort {sort} not found in initial state"
+                interp = elem_to_univ_name(interp)
+                for elem in sorts[sort]:
+                    name = f"{const.name}={elem}"
+                    d[name] = True if elem == interp else False
+
+        # Dump relations
+        for (rel, interp) in st.rel_interps.items():
+            if rel.arity == 0:
+                d[rel.name] = True if interp else False
+            else:
+                for (args, val) in interp.items():
+                    name = f"{rel.name}({','.join(map(elem_to_univ_name, args))})"
+                    d[name] = True if val else False
+
+        # TODO: handle functions; it's a bit unclear what DuoAI's
+        # translate.py does for them.
+
+    return (d, sorts)
