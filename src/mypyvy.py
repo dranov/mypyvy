@@ -22,7 +22,7 @@ import updr
 import utils
 import relaxed_traces
 from trace import bmc_trace
-from trace_dump import generate_trace, generate_reachable_states, expand_explicit_state
+from trace_dump import expand_explicit_state
 
 import pd
 import rethink
