@@ -410,9 +410,6 @@ class State(FirstOrderStructure):
             FrozenSet[Tuple[Tuple[str, str], bool]],
     ]
 
-    def __hash__(self):
-        return hash(self.fingerprint)
-
     @property
     def fingerprint(self) -> Fingerprint:
         '''Return a value that is guaranteed to be identical for isomorphic
