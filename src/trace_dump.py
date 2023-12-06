@@ -17,7 +17,7 @@ import sys
 rng = np.random.default_rng(0)
 RAND_ACTION_MAX_ITER = 50
 
-GIVE_UP_AFTER_N_UNEVENTFUL_SIMULATIONS = 10
+GIVE_UP_AFTER_N_UNEVENTFUL_SIMULATIONS = sys.maxsize
 
 GIVE_UP_AFTER_N_CONSECUTIVE_DUPS = 100
 
@@ -102,7 +102,8 @@ def expand_explicit_state(s: Solver, max_states: int = 25, sort_sizes: Optional[
     all_transitions = set([ition.name for ition in prog.transitions()])
 
     def state_id(st: State) -> str:
-        return parse_state_to_str(st, sort_elems, pred_columns)
+        # return parse_state_to_str(st, sort_elems, pred_columns)
+        return st._unique_id()
 
     def block(s: Solver, st: State):
         pyv_fmla = Not(st.as_onestate_formula())

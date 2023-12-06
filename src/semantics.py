@@ -410,6 +410,35 @@ class State(FirstOrderStructure):
             FrozenSet[Tuple[Tuple[str, str], bool]],
     ]
 
+    def _unique_id(self) -> str:
+        if not hasattr(self, "_unique_id_cache"):
+            d = []
+            for s in sorted(self.univs.keys()):
+                for x in sorted(self.univs[s]):
+                    d.append((s.name, x))
+
+            for C in sorted(self.const_interps.keys()):
+                interp = self.const_interps[C]
+                # Fix for booleans
+                if isinstance(interp, dict) and () in interp:
+                    interp = True if interp[()] else False
+                elif isinstance(interp, str):
+                    assert interp in ['true', 'false']
+                    interp = False if interp == 'false' else True
+                d.append((C.name, interp))
+
+            for R in sorted(self.rel_interps.keys(), key=lambda k: k.name):
+                for tup, b in sorted(self.rel_interps[R].items()):
+                    d.append((R.name, (tup, b)))
+
+            for F in sorted(self.func_interps.keys(), key=lambda k: k.name):
+                for tup, res in sorted(self.func_interps[F].items()):
+                    d.append((F.name, (tup, res)))
+
+            self._unique_id_cache = frozenset(d)
+        assert self._unique_id_cache is not None
+        return str(hash(self._unique_id_cache))
+
     @property
     def fingerprint(self) -> Fingerprint:
         '''Return a value that is guaranteed to be identical for isomorphic
