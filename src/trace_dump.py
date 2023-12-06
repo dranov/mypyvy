@@ -11,6 +11,7 @@ import copy
 import pandas as pd
 import random
 
+GIVE_UP_AFTER_N_CONSECUTIVE_DUPS = 100
 
 def add_diversity_constraints(s: Solver, tr: dict[int, dict[str, z3.Bool]]):
     prog = syntax.the_program
@@ -88,6 +89,7 @@ def generate_reachable_states(s: Solver, max_states: int = 25, sort_sizes: Optio
     t1 = s.get_translator(1) # translator for one-state formulas
     t2 = s.get_translator(2) # translator for two-state formulas
 
+    blocked_states = {}
     reached_states = {}
     # reachable states at a certain depth
     reachable_states: dict[int, list[State]] = {0: []}
@@ -96,19 +98,14 @@ def generate_reachable_states(s: Solver, max_states: int = 25, sort_sizes: Optio
     # These are pre-depths
     available_depths = set([-1])
 
-    def block_state(s: Solver, m: State, d: int):
-        # FIXME: blocking doesn't work!!
-        # nonlocal blocked_states
-        if d == 0:
-            pyv_fmla = Not(m.as_onestate_formula())
-            z3_fmla = t1.translate_expr(pyv_fmla)
-        else:
-            pyv_fmla = New(Not(m.as_onestate_formula()))
-            z3_fmla = t2.translate_expr(pyv_fmla)
-        # print(f'blocking state {hash(m)}')
-        # assert hash(m) not in blocked_fingerprints, f"state {hash(m)} already blocked!"
-        # blocked_fingerprints.add(hash(m))
-        # blocked_states.append(m)
+    def block_post_state(s: Solver, m: State):
+        state_id = parse_state_to_str(m, sort_elems, pred_columns)
+        assert state_id not in blocked_states, f"state {state_id} already blocked!"
+        blocked_states[state_id] = m
+
+        # FIXME: why is blocking so unbelievably slow?
+        pyv_fmla = New(Not(m.as_onestate_formula()))
+        z3_fmla = t2.translate_expr(pyv_fmla)
         s.add(z3_fmla)
 
     def assert_state_at_depth(s: Solver, d: int):
@@ -116,9 +113,11 @@ def generate_reachable_states(s: Solver, max_states: int = 25, sort_sizes: Optio
             for init in prog.inits():
                 s.add(t1.translate_expr(init.expr))
         else:
-            # Pick one of the reachable states at depth d - 1
-            pres = [t1.translate_expr(m.as_onestate_formula()) for m in reachable_states[d - 1]]
-            s.add(z3.Or(*pres))
+            # Pick any one of the reachable states at depth d - 1
+            # pres = [t1.translate_expr(m.as_onestate_formula()) for m in reachable_states[d - 1]]
+            # s.add(z3.Or(*pres))
+            rs = random.choice(reachable_states[d - 1])
+            s.add(t1.translate_expr(rs.as_onestate_formula()))
 
     def assert_some_transition(s: Solver):
         # Assert any transition from that state
@@ -127,7 +126,9 @@ def generate_reachable_states(s: Solver, max_states: int = 25, sort_sizes: Optio
             call = syntax.TransitionCall(ition.name, None)
             tid_name = get_transition_indicator(str(i), call.target)
             tid = z3.Bool(tid_name)
-            s.add(z3.Implies(tid, translate_transition_call(s, t2, 0, call)))
+            tr = translate_transition_call(s, t2, 0, call)
+            # tr = t2.translate_expr(ition.as_twostate_formula(syntax.the_program.scope))
+            s.add(z3.Implies(tid, tr))
             tids.append(tid)
         s.add(z3.Or(*tids))
 
@@ -163,25 +164,31 @@ def generate_reachable_states(s: Solver, max_states: int = 25, sort_sizes: Optio
                 print(f'bounding {sort} to cardinality {b}')
                 s.add(s._sort_strict_cardinality_constraint(Z3Translator.sort_to_z3(sort), b))
 
-        while num_states + num_duplicates < max_states:
+        num_dups_in_a_row = 0
+        while (num_states + num_duplicates < max_states) and (num_dups_in_a_row < GIVE_UP_AFTER_N_CONSECUTIVE_DUPS):
             # Pick an available pre-depth
             d = random.choice(list(available_depths))
-            # d = -1
+            # d = min(available_depths)
+
             diag = [len(reachable_states[k]) for k in sorted(list(reachable_states.keys()))]
             print(f'{num_states}/{max_states}: diag {diag} | {num_duplicates} dups | chosen depth {d}')
             # print(f"blocked states: {blocked_fingerprints}")
             # import pdb; pdb.set_trace()
 
             s.push()
+            # print(f'... asserting state at depth {d}')
             assert_state_at_depth(s, d)
             assert_some_transition(s)
             st = get_and_record_post_state(s, d + 1)
             s.pop()
             if st is not None:
-                # block_state(s, st, d + 1)
-                pass
+                # block_post_state(s, st)
+                num_dups_in_a_row = 0
             else:
+                # print(f'found duplicate state extending from depth {d}; nothing left to explore there')
+                # available_depths.remove(d)
                 num_duplicates += 1
+                num_dups_in_a_row += 1
 
     print(f"Found {len(reached_states)} unique reachable states (hit {num_duplicates} duplicates)")
     fake_trace = [(f"state_{i}", st) for (i, st) in reached_states.items()]
@@ -244,7 +251,7 @@ def generate_trace(s: Solver, max_length: int = 25, sort_sizes: Optional[list[in
                 with s.new_frame():
                     s.add(t2.translate_expr(ition.as_twostate_formula(prog.scope)))
                     # Block previous state: we don't want no-ops
-                    s.add(t2.translate_expr(New(Not(last_state.as_onestate_formula()))))
+                    # s.add(t2.translate_expr(New(Not(last_state.as_onestate_formula()))))
 
                     res = s.check()
                     if res == z3.sat:
@@ -287,6 +294,7 @@ def dump_trace_csv(tr: list[(str, State)], filename: str, sort_elems: Optional[d
     df = pd.DataFrame(xs)
     df.replace({False: 0, True: 1}, inplace=True)
     df.sort_values(df.columns.tolist(), inplace=True)
+    df.drop_duplicates(inplace=True)
     df.to_csv(filename, index=False)
 
 def dump_traces(traces: dict[int, list[(str, State)]], base_filename: str):
