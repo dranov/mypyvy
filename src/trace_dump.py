@@ -18,6 +18,7 @@ rng = np.random.default_rng(0)
 RAND_ACTION_MAX_ITER = 50
 
 GIVE_UP_AFTER_N_UNEVENTFUL_SIMULATIONS = 5
+MAX_INITIAL_STATES = 10
 
 def add_diversity_constraints(s: Solver, tr: dict[int, dict[str, z3.Bool]]):
     prog = syntax.the_program
@@ -54,9 +55,16 @@ def expand_explicit_state(s: Solver, max_states: int = 25, pyv_sort_elems: Optio
         # return parse_state_to_str(st, sort_elems, pred_columns)
         return st._unique_id()
 
-    def block(s: Solver, st: State):
-        pyv_fmla = Not(st.as_onestate_formula())
-        z3_fmla = t2.translate_expr(pyv_fmla)
+    def assert_state(s: Solver, st: State):
+        s.add(t1.translate_expr(st.as_onestate_formula()))
+
+    def block_state(s: Solver, t: Z3Translator, st: State):
+        # FIXME: this doesn't actually seem to work as intended
+        # due to the artificially introduced constants to represent
+        # the sorts elements (see `rewritten.py`)
+        pyv_fmla = New(Not(st.as_onestate_formula()), t.num_states - 1)
+        z3_fmla = t.translate_expr(pyv_fmla)
+        # print(f"blocking\n{z3_fmla.sexpr()}\n")
         s.add(z3_fmla)
 
     def get_post_state(s: Solver, one_state=False) -> Optional[State]:
@@ -71,9 +79,6 @@ def expand_explicit_state(s: Solver, max_states: int = 25, pyv_sort_elems: Optio
         elif res == z3.unknown:
             assert False, "should not be unknown"
 
-    def assert_state(s: Solver, st: State):
-        s.add(t1.translate_expr(st.as_onestate_formula()))
-
     def assert_transition_any_args(s: Solver, ition: DefinitionDecl):
         call = syntax.TransitionCall(ition.name, None)
         tid_name = get_transition_indicator('0', call.target)
@@ -84,10 +89,12 @@ def expand_explicit_state(s: Solver, max_states: int = 25, pyv_sort_elems: Optio
 
     def assert_transition_random_args(s: Solver, ition: DefinitionDecl):
         def random_var(sort_decl):
-            return rng.choice(pyv_sort_elems[sort_decl.name])
+            if type(sort_decl) is syntax._BoolSort:
+                return rng.choice([syntax.TrueExpr, syntax.FalseExpr])
+            return Id(rng.choice(pyv_sort_elems[sort_decl.name]))
         args = []
         for b in ition.binder.vs:
-            args.append(Id(random_var(b.sort)))
+            args.append(random_var(b.sort))
         # print(f"{ition.name}({','.join(map(str, args))})")
         call = syntax.TransitionCall(ition.name, args)
         tid_name = get_transition_indicator('0', call.target)
@@ -106,13 +113,18 @@ def expand_explicit_state(s: Solver, max_states: int = 25, pyv_sort_elems: Optio
                 s.add(t1.translate_expr(init.expr))
 
             while True:
+                if len(reached_states) >= MAX_INITIAL_STATES:
+                    print(f"Reached maximum number of initial states ({MAX_INITIAL_STATES})!")
+                    break
+
                 st = get_post_state(s, one_state=True)
                 if st is None:
                     break
                 sid = state_id(st)
+                # print(f"Found and blocked initial state {sid}\n{st}\n\n", flush=True)
                 reached_states[sid] = st
                 to_expand[sid] = (0, st)
-                block(s, st)
+                block_state(s, t1, st)
 
         print(f"Found {len(reached_states)} unique initial states!")
         initial_states = copy.deepcopy(reached_states)
@@ -171,6 +183,10 @@ def expand_explicit_state(s: Solver, max_states: int = 25, pyv_sort_elems: Optio
             while simulation_round < max_simulation_rounds:
                 with s.new_frame():
                     # Random initial state
+                    if len(initial_states) == 0:
+                        print("No initial states to expand!")
+                        return
+
                     key_choice = random.choice(list(initial_states.keys()))
                     st = initial_states[key_choice]
                     assert_state(s, st)
@@ -213,7 +229,7 @@ def expand_explicit_state(s: Solver, max_states: int = 25, pyv_sort_elems: Optio
     dump_trace_csv(fake_trace, filename, duo_sort_elems, pred_columns)
 
 
-def dump_trace_csv(tr: list[(str, State)], filename: str, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None):
+def dump_trace_csv(tr: list[(str, State)], filename: str, sort_elems: Optional[dict[tuple[int], list[str]]] = None, pred_columns: Optional[list[str]] = None):#
     print(f"Dumping trace to {filename}...")
     xs = [parse_state(st, sort_elems, pred_columns) for (_tname, st) in tr]
     # Sanity check: all sorts are the same
@@ -285,7 +301,11 @@ def parse_state(st: State, sort_elems: Optional[dict[tuple[int], list[str]]] = N
         for (const, interp) in st.const_interps.items():
             # Special case for booleans
             if isinstance(const.sort, syntax._BoolSort):
-                d[const.name] = True if interp[()] else False
+                if type(interp) is str:
+                    interp = True if interp == 'true' else False
+                else:
+                    assert type(interp) is dict
+                    d[const.name] = True if interp[()] else False
             else:
                 sort = const.sort.name
                 assert sort in sorts, f"sort {sort} not found in initial state"
