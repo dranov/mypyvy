@@ -413,7 +413,7 @@ class State(FirstOrderStructure):
     def _unique_id(self) -> str:
         if not hasattr(self, "_unique_id_cache"):
             d = []
-            for s in sorted(self.univs.keys()):
+            for s in sorted(self.univs.keys(), key=lambda k: k.name):
                 for x in sorted(self.univs[s]):
                     d.append((s.name, x))
 
